@@ -1,4 +1,4 @@
-# 部署指南（v1.0.1，Docker 方式）
+# 部署指南（v1.0.2，Docker 方式）
 
 面向 Linux 服务器（Ubuntu / Debian / CentOS 等）的首次部署与日常维护。
 
@@ -41,16 +41,16 @@ sudo systemctl restart docker
 在本机（Git Bash / PowerShell 均可）：
 
 ```bash
-scp random-image-api-v1.0.1-src.tar.gz root@服务器IP:/tmp/
+scp random-image-api-v1.0.2-src.tar.gz root@服务器IP:/tmp/
 # 若服务器无法访问 npm，再额外上传离线依赖包（见第六节）
-scp random-image-api-v1.0.1-node_modules-linux-x64.tar.gz root@服务器IP:/tmp/
+scp random-image-api-v1.0.2-node_modules-linux-x64.tar.gz root@服务器IP:/tmp/
 ```
 
 服务器上：
 
 ```bash
 mkdir -p /opt/random-image-api
-tar -xzf /tmp/random-image-api-v1.0.1-src.tar.gz -C /opt/random-image-api --strip-components=1
+tar -xzf /tmp/random-image-api-v1.0.2-src.tar.gz -C /opt/random-image-api --strip-components=1
 cd /opt/random-image-api
 ls   # 应看到 server/ client/dist/ docker-compose.yml deploy/ 等
 ```
@@ -119,10 +119,10 @@ sudo certbot --nginx -d img.example.com
 ```bash
 cd /opt/random-image-api
 mkdir -p node_modules-offline
-tar -xzf /tmp/random-image-api-v1.0.1-node_modules-linux-x64.tar.gz \
+tar -xzf /tmp/random-image-api-v1.0.2-node_modules-linux-x64.tar.gz \
     -C node_modules-offline --strip-components=2
 
-docker build -f deploy/Dockerfile.offline -t random-image-api:v1.0.1 .
+docker build -f deploy/Dockerfile.offline -t random-image-api:v1.0.2 .
 docker compose -f deploy/docker-compose.offline.yml up -d
 ```
 
