@@ -5,9 +5,12 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile.offline
-    image: random-image-api:v1.0.1
+    image: random-image-api:v1.0.7
     container_name: random-image-api
     restart: unless-stopped
+    dns:
+      - 223.5.5.5
+      - 119.29.29.29
     ports:
       - "3100:3100"
     volumes:

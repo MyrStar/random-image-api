@@ -3,6 +3,11 @@ services:
     build: .
     container_name: random-image-api
     restart: unless-stopped
+    # 指定公共 DNS：容器默认可能回退到公共解析器，拿到 CDN 异常线路的节点
+    # （服务器访问存储域名超时时，优先检查这里）
+    dns:
+      - 223.5.5.5
+      - 119.29.29.29
     ports:
       - "3100:3100"
     volumes:
