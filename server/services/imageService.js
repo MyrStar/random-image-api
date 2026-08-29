@@ -332,6 +332,7 @@ async function fixDimensions(categoryId = null) {
   }
   const images = db.prepare(sql).all(...params).filter(img => !dimensionFixFailed.has(img.id));
   let fixed = 0, failed = 0;
+  const errors = [];
   let cursor = 0;
 
   // 简易并发池
@@ -348,10 +349,13 @@ async function fixDimensions(categoryId = null) {
         } else {
           dimensionFixFailed.add(img.id);
           failed++;
+          if (errors.length < 10) errors.push({ filename: img.filename, url: img.url, reason: '无法解析图片尺寸（格式可能不受支持）' });
         }
-      } catch {
+      } catch (err) {
         dimensionFixFailed.add(img.id);
         failed++;
+        console.warn(`[fixDimensions] ${img.filename}: ${err.message}`);
+        if (errors.length < 10) errors.push({ filename: img.filename, url: img.url, reason: err.message });
       }
     }
   }
@@ -366,7 +370,7 @@ async function fixDimensions(categoryId = null) {
     : db.prepare('SELECT slug FROM categories').all();
   for (const c of categories) cache.del(CACHE_PREFIX + c.slug);
 
-  return { total: images.length, fixed, failed };
+  return { total: images.length, fixed, failed, errors };
 }
 
 /**

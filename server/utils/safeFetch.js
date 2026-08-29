@@ -141,7 +141,9 @@ function safeLookup(hostname, options, callback) {
         return callback(createBlockError(`禁止访问内网地址: ${hostname} -> ${a.address}`));
       }
     }
-    callback(null, addresses[0].address, addresses[0].family);
+    // 优先 IPv4：部分服务器 IPv6 不通，逐条等待会拖慢/挂起请求
+    const sorted = [...addresses].sort((a, b) => (a.family === 4 ? 0 : 1) - (b.family === 4 ? 0 : 1));
+    callback(null, sorted[0].address, sorted[0].family);
   });
 }
 

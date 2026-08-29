@@ -209,8 +209,17 @@ async function fixDimensions() {
   fixing.value = true
   try {
     const payload = scoped ? { category_id: selectedCategory.value } : {}
-    const res = await api.post('/images/fix-dimensions', payload)
+    const res = await api.post('/images/fix-dimensions', payload, { timeout: 600000 })
     ElMessage.success(res.message || `修复完成：共${res.data.total}张，成功${res.data.fixed}张，失败${res.data.failed}张`)
+    // 失败时展示具体原因，便于定位（网络/防盗链/格式等）
+    if (res.data?.failed > 0) {
+      const reasons = (res.data.errors || []).map(e => `${e.filename}：${e.reason}`).join('\n')
+      ElMessageBox.alert(
+        (reasons || '原因未返回') + (res.data.failed > (res.data.errors?.length || 0) ? `\n……等共 ${res.data.failed} 张失败` : ''),
+        `失败 ${res.data.failed} 张，原因如下`,
+        { type: 'warning', customStyle: { whiteSpace: 'pre-line', wordBreak: 'break-all' } }
+      ).catch(() => {})
+    }
     loadImages()
   } catch {} finally {
     fixing.value = false
