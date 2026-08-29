@@ -14,6 +14,7 @@ const dns = require('dns').promises;
 const net = require('net');
 const http = require('http');
 const https = require('https');
+const config = require('../config');
 
 /* ---------------- 内网 IP 判定 ---------------- */
 
@@ -184,11 +185,18 @@ async function safeFetch(urlStr, opts = {}) {
     }
     await assertPublicHost(url.hostname);
 
+    // 请求头带上本站 Referer：存储域名开启 Referer 防盗链白名单时，服务器请求才能通过
+    // （本站域名通常在白名单内；不希望发送时传 opts.referer = false）
+    const headers = { 'User-Agent': 'random-image-api/1.0' };
+    if (opts.referer !== false && config.publicUrl) {
+      headers['Referer'] = String(config.publicUrl).replace(/\/+$/, '') + '/';
+    }
+
     const response = await fetch(url, {
       redirect: 'manual',
       signal: AbortSignal.timeout(timeoutMs),
       agent: url.protocol === 'https:' ? httpsAgent : httpAgent,
-      headers: { 'User-Agent': 'random-image-api/1.0' },
+      headers,
     });
 
     // 重定向：手动跟随，每一跳重新校验
