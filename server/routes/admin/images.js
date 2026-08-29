@@ -157,4 +157,28 @@ router.post('/fix-dimensions', async (req, res) => {
   }
 });
 
+/**
+ * POST /admin/api/images/set-dimensions
+ * 浏览器预览加载后回填真实宽高（用于服务器无法直接访问存储域名的情况）
+ */
+router.post('/set-dimensions', (req, res) => {
+  try {
+    const items = req.body.items;
+    if (!Array.isArray(items) || items.length === 0) {
+      return res.status(400).json({ code: 400, message: '缺少items' });
+    }
+    let updated = 0;
+    for (const item of items.slice(0, 500)) {
+      const id = parseInt(item.id, 10);
+      const w = parseInt(item.width, 10);
+      const h = parseInt(item.height, 10);
+      if (!id || !(w > 0) || !(h > 0) || w > 100000 || h > 100000) continue;
+      if (imageService.setImageDimensions(id, w, h)) updated++;
+    }
+    res.json({ code: 0, data: { updated }, message: `已更新${updated}张` });
+  } catch (err) {
+    sendCaught(res, err);
+  }
+});
+
 module.exports = router;

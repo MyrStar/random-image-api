@@ -18,6 +18,18 @@ const LARGE_CATEGORY_THRESHOLD = 10000;
 const FIX_DIMENSIONS_CONCURRENCY = 4;
 const FIX_DIMENSIONS_MAX_BYTES = 100 * 1024 * 1024;
 
+/** 把 node-fetch 的底层报错翻译成可操作的提示 */
+function friendlyFetchError(err) {
+  const msg = err.message || String(err);
+  if (err.name === 'AbortError' || /aborted/i.test(msg)) {
+    return '请求超时：服务器无法访问该图片URL（常见原因：七牛防盗链拦截了服务器请求、服务器到CDN线路不通、防火墙拦截出站请求）';
+  }
+  if (/certificate|SSL|TLS|self-signed/i.test(msg)) {
+    return 'HTTPS 证书验证失败：' + msg;
+  }
+  return msg;
+}
+
 // 适配器实例缓存，避免每次请求都创建
 const adapterCache = new Map();
 
@@ -354,8 +366,9 @@ async function fixDimensions(categoryId = null) {
       } catch (err) {
         dimensionFixFailed.add(img.id);
         failed++;
-        console.warn(`[fixDimensions] ${img.filename}: ${err.message}`);
-        if (errors.length < 10) errors.push({ filename: img.filename, url: img.url, reason: err.message });
+        const reason = friendlyFetchError(err);
+        console.warn(`[fixDimensions] ${img.filename}: ${reason}`);
+        if (errors.length < 10) errors.push({ filename: img.filename, url: img.url, reason });
       }
     }
   }
@@ -380,6 +393,25 @@ function clampPage(page, size) {
   const p = Number.isFinite(page) && page >= 1 ? Math.floor(page) : 1;
   const s = Number.isFinite(size) && size >= 1 ? Math.min(Math.floor(size), 200) : 20;
   return [p, s];
+}
+
+/**
+ * 设置图片尺寸（浏览器预览加载后回填真实宽高，绕开服务器无法访问存储域名的情况）
+ * 仅更新当前为 0×0 的记录，避免覆盖正确数据；返回受影响分类的 slug 列表
+ */
+function setImageDimensions(id, width, height) {
+  const affected = db.prepare(`
+    UPDATE images SET width = ?, height = ?
+    WHERE id = ? AND width = 0 AND height = 0
+  `).run(width, height, id);
+
+  if (affected.changes === 0) return null;
+  const row = db.prepare(`
+    SELECT c.slug FROM images i JOIN categories c ON i.category_id = c.id WHERE i.id = ?
+  `).get(id);
+  if (row) cache.del(CACHE_PREFIX + row.slug);
+  dimensionFixFailed.delete(id);
+  return row ? row.slug : null;
 }
 
 /**
@@ -574,6 +606,7 @@ module.exports = {
   deleteImage,
   deleteImages,
   syncFromStorage,
+  setImageDimensions,
   getImages,
   getStorages,
   getStorageById,

@@ -20,7 +20,7 @@
           <el-checkbox :model-value="selectedIds.includes(img.id)" @click.stop @change="toggleSelect(img.id)" />
         </div>
         <div class="image-thumb" @click.stop="previewImage(img)">
-          <img :src="img.url" :alt="img.filename" loading="lazy" />
+          <img :src="img.url" :alt="img.filename" loading="lazy" @load="onImgLoad(img, $event)" />
         </div>
         <div class="image-info">
           <div class="image-name" :title="img.filename">{{ img.filename }}</div>
@@ -50,7 +50,7 @@
     <!-- 图片预览弹窗 -->
     <el-dialog v-model="previewVisible" width="auto" destroy-on-close custom-class="preview-dialog">
       <div class="preview-container">
-        <img :src="previewImg?.url" class="preview-img" />
+        <img :src="previewImg?.url" class="preview-img" @load="onImgLoad(previewImg, $event)" />
       </div>
       <div class="preview-info" v-if="previewImg">
         <el-descriptions :column="2" size="small" border>
@@ -115,6 +115,7 @@ const previewImg = ref(null)
 const showUpload = ref(false)
 const uploading = ref(false)
 const uploadFiles = ref([])
+const pendingDimensions = ref([])
 
 // 服务端上传限制（系统设置中可改，这里同步用于前端预校验）
 const uploadLimits = ref({ maxSizeMB: 50, maxFiles: 20 })
@@ -224,6 +225,34 @@ async function fixDimensions() {
   } catch {} finally {
     fixing.value = false
   }
+}
+
+function onImgLoad(img, ev) {
+  // 浏览器能加载图片而服务器不一定能，预览加载成功后自动回填 0×0 记录的真实宽高
+  if (!img || img.width !== 0 || img.height !== 0) return
+  const w = ev.target?.naturalWidth
+  const h = ev.target?.naturalHeight
+  if (!(w > 0) || !(h > 0)) return
+  img.width = w
+  img.height = h
+  if (!pendingDimensions.value.some(d => d.id === img.id)) {
+    pendingDimensions.value.push({ id: img.id, width: w, height: h })
+  }
+  scheduleDimensionFlush()
+}
+
+let dimensionFlushTimer = null
+function scheduleDimensionFlush() {
+  clearTimeout(dimensionFlushTimer)
+  dimensionFlushTimer = setTimeout(flushDimensions, 2000)
+}
+
+async function flushDimensions() {
+  if (!pendingDimensions.value.length) return
+  const items = pendingDimensions.value.splice(0)
+  try {
+    await api.post('/images/set-dimensions', { items })
+  } catch { /* 服务器保存失败不影响浏览，下次加载会再次尝试 */ }
 }
 
 function onFileChange(file) {
