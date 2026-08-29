@@ -19,7 +19,7 @@ const ANIMATED_MIMES = ['image/gif', 'image/webp', 'image/avif'];
 const RESIZE_MODES = ['fit', 'fill', 'stretch'];
 // 代理下载的单图大小上限
 const PROXY_MAX_BYTES = 100 * 1024 * 1024;
-const PROXY_TIMEOUT_MS = 20000;
+const PROXY_TIMEOUT_MS = 30000;
 
 /**
  * 解析 w/h 查询参数：仅接受纯数字，返回 null 表示未提供/无效

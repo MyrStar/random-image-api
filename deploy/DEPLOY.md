@@ -1,4 +1,4 @@
-# 部署指南（v1.0.9，Docker 方式）
+# 部署指南（v1.0.10，Docker 方式）
 
 面向 Linux 服务器（Ubuntu / Debian / CentOS 等）的首次部署与日常维护。
 
@@ -41,16 +41,16 @@ sudo systemctl restart docker
 在本机（Git Bash / PowerShell 均可）：
 
 ```bash
-scp random-image-api-v1.0.9-src.tar.gz root@服务器IP:/tmp/
+scp random-image-api-v1.0.10-src.tar.gz root@服务器IP:/tmp/
 # 若服务器无法访问 npm，再额外上传离线依赖包（见第六节）
-scp random-image-api-v1.0.9-node_modules-linux-x64.tar.gz root@服务器IP:/tmp/
+scp random-image-api-v1.0.10-node_modules-linux-x64.tar.gz root@服务器IP:/tmp/
 ```
 
 服务器上：
 
 ```bash
 mkdir -p /opt/random-image-api
-tar -xzf /tmp/random-image-api-v1.0.9-src.tar.gz -C /opt/random-image-api --strip-components=1
+tar -xzf /tmp/random-image-api-v1.0.10-src.tar.gz -C /opt/random-image-api --strip-components=1
 cd /opt/random-image-api
 ls   # 应看到 server/ client/dist/ docker-compose.yml deploy/ 等
 ```
@@ -119,10 +119,10 @@ sudo certbot --nginx -d img.example.com
 ```bash
 cd /opt/random-image-api
 mkdir -p node_modules-offline
-tar -xzf /tmp/random-image-api-v1.0.9-node_modules-linux-x64.tar.gz \
+tar -xzf /tmp/random-image-api-v1.0.10-node_modules-linux-x64.tar.gz \
     -C node_modules-offline --strip-components=2
 
-docker build -f deploy/Dockerfile.offline -t random-image-api:v1.0.9 .
+docker build -f deploy/Dockerfile.offline -t random-image-api:v1.0.10 .
 docker compose -f deploy/docker-compose.offline.yml up -d
 ```
 
@@ -173,3 +173,11 @@ docker compose up -d --build
 - **启动即退出，日志报"检测到不安全的默认配置"**：`.env` 有默认密钥，生产环境禁止启动，重新运行 setup-env.sh。
 - **修改配置**：后台「系统设置」在线改即可，无需重启；`.env` 仅首次初始化生效。
 - **改了端口无法访问**：Docker 部署请保持 `PORT=3100`；如确需修改，同步改 `docker-compose.yml` 的端口映射后 `docker compose up -d` 重建。
+
+## 常见问题补充：取图超时但宿主机 curl 正常（MTU 黑洞）
+
+症状：缩放/修复尺寸/代理取图超时，日志为"请求超时"，但宿主机 `curl` 同一 URL 返回 200。
+原因：VPS 实际路径 MTU 小于容器网桥的 1500（TCP 小包能通、TLS 证书大包被丢）。
+诊断：`ping -M do -s 1372 <存储域名解析IP>`（1372+28=1400，不通则继续降值探测）。
+修复：`docker-compose.yml` 中 `networks.default.driver_opts.com.docker.network.driver.mtu`
+默认已设 1400，可按探测结果调整后 `docker compose up -d` 重建。

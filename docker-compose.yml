@@ -20,3 +20,12 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+
+# 网桥 MTU：部分 VPS（尤其隧道/叠加网线路）实际路径 MTU 小于 1500，容器按 1500 发包
+# 会导致 TCP 能连但 TLS 握手挂起（取图超时的典型症状）。若取图超时：
+# 宿主机 `ping -M do -s 1372 <存储域名解析IP>` 探测路径 MTU 后调整此值（= 探测字节数 + 28）
+networks:
+  default:
+    driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: 1400

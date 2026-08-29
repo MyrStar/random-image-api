@@ -352,7 +352,7 @@ async function fixDimensions(categoryId = null) {
     while (cursor < images.length) {
       const img = images[cursor++];
       try {
-        const resp = await safeFetch(img.url, { timeoutMs: 15000, maxBytes: FIX_DIMENSIONS_MAX_BYTES });
+        const resp = await safeFetch(img.url, { timeoutMs: 30000, maxBytes: FIX_DIMENSIONS_MAX_BYTES });
         const { width, height } = getImageDimensions(resp.buffer);
         if (width > 0 || height > 0) {
           db.prepare('UPDATE images SET width = ?, height = ? WHERE id = ?').run(width, height, img.id);
