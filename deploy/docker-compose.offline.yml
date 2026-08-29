@@ -1,0 +1,22 @@
+# 配合 deploy/Dockerfile.offline 的离线部署编排
+# 在项目根目录执行: docker compose -f deploy/docker-compose.offline.yml up -d
+services:
+  random-image-api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.offline
+    image: random-image-api:v1.0.1
+    container_name: random-image-api
+    restart: unless-stopped
+    ports:
+      - "3100:3100"
+    volumes:
+      - ../data:/app/data
+      - ../.env:/app/.env:ro
+    environment:
+      - NODE_ENV=production
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

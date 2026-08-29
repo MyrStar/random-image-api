@@ -1,7 +1,10 @@
 FROM node:20-alpine AS client-builder
 WORKDIR /app/client
 COPY client/package*.json ./
-RUN npm ci
+# 国内服务器构建慢/失败时，可在 build 命令传入其它源：
+#   docker compose build --build-arg NPM_REGISTRY=https://registry.npmjs.org
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+RUN npm ci --registry=${NPM_REGISTRY}
 COPY client/ ./
 RUN npm run build
 
@@ -10,7 +13,8 @@ WORKDIR /app
 COPY server/ ./server/
 COPY package*.json ./
 # 注意：不将 .env 烘焙到镜像中，应通过 docker-compose 挂载或环境变量注入
-RUN npm ci --omit=dev
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+RUN npm ci --omit=dev --registry=${NPM_REGISTRY}
 COPY --from=client-builder /app/client/dist ./client/dist
 
 # 数据目录归属 node 用户（容器以非 root 运行）

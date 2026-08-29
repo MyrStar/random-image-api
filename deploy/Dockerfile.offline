@@ -1,0 +1,30 @@
+# 离线 Docker 构建：服务器无法访问 npm 时使用
+# 前置：已在本机把 client/dist 构建好（源码包内已含），
+#       并把 node_modules 离线包解压到项目目录的 node_modules-offline/ 下：
+#   mkdir -p node_modules-offline
+#   tar -xzf random-image-api-v1.0.1-node_modules-linux-x64.tar.gz \
+#       -C node_modules-offline --strip-components=2
+#
+# 构建（在项目根目录执行）：
+#   docker build -f deploy/Dockerfile.offline -t random-image-api:v1.0.1 .
+#   docker compose -f deploy/docker-compose.offline.yml up -d
+#
+# 仍需要外网的只有基础镜像 node:20-alpine（可通过 docker 镜像加速获取）
+
+FROM node:20-alpine
+WORKDIR /app
+COPY server/ ./server/
+COPY package*.json ./
+# 使用随源码包附带的离线依赖（含 glibc 与 musl 双平台 sharp 二进制，alpine 兼容）
+COPY node_modules-offline/ ./node_modules/
+COPY client/dist ./client/dist
+
+RUN mkdir -p /app/data && chown -R node:node /app/data
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD wget -qO- "http://127.0.0.1:${PORT:-3100}/health" || exit 1
+
+VOLUME /app/data
+EXPOSE 3100
+USER node
+CMD ["node", "server/index.js"]
