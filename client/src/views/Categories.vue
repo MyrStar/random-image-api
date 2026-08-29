@@ -137,9 +137,9 @@ async function handleDelete(id) {
   load()
 }
 
-function copyUrl(url) {
-  copyToClipboard(url)
-  ElMessage.success('已复制')
+async function copyUrl(url) {
+  const ok = await copyToClipboard(url)
+  ok ? ElMessage.success('已复制') : ElMessage.error('复制失败，请手动复制')
 }
 
 onMounted(load)

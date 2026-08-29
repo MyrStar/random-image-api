@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const auth = require('../../middleware/auth');
 const imageService = require('../../services/imageService');
+const { sendCaught } = require('../../utils/respond');
 
 router.use(auth);
 
@@ -14,7 +15,7 @@ router.get('/', (req, res) => {
     const stats = imageService.getStats();
     res.json({ code: 0, data: stats });
   } catch (err) {
-    res.status(500).json({ code: 500, message: err.message });
+    sendCaught(res, err);
   }
 });
 

@@ -1,0 +1,21 @@
+[Unit]
+Description=Random Image API Service
+After=network.target
+
+[Service]
+Type=simple
+# 按实际部署路径修改 WorkingDirectory 与 ExecStart
+WorkingDirectory=/opt/random-image-api
+ExecStart=/usr/bin/node server/index.js
+Environment=NODE_ENV=production
+Restart=on-failure
+RestartSec=3
+
+# 建议以非 root 运行：创建专用用户后取消注释
+# User=rimapi
+# Group=rimapi
+# 若使用专用用户，请确保其可写数据目录：
+#   chown -R rimapi:rimapi /opt/random-image-api/data
+
+[Install]
+WantedBy=multi-user.target

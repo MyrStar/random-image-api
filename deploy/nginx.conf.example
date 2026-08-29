@@ -1,0 +1,23 @@
+# Nginx 反向代理示例（同机部署，配合默认 TRUST_PROXY=loopback）
+# 放到 /etc/nginx/conf.d/random-image-api.conf 后:
+#   nginx -t && systemctl reload nginx
+
+server {
+    listen 80;
+    server_name img.example.com;   # 改为你的域名
+
+    # 建议限制上传体积与超时（管理后台上传大图）
+    client_max_body_size 200m;
+    proxy_read_timeout 120s;
+
+    location / {
+        proxy_pass http://127.0.0.1:3100;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+# HTTPS（推荐，用 certbot 一键签发后取消注释并重载 nginx）:
+#   certbot --nginx -d img.example.com

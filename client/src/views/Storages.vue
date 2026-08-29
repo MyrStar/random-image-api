@@ -226,14 +226,21 @@ async function load() {
   loading.value = false
 }
 
-function openDialog(row) {
+async function openDialog(row) {
   if (row) {
     editingId.value = row.id
     form.name = row.name
     form.type = row.type
     form.endpoint = row.endpoint || ''
+    // 编辑时必须从详情接口拉取（脱敏后的）配置回填。
+    // 列表接口不返回 config，若用空对象回填，保存时会把已保存的密钥覆盖为空
     const factory = configDefaults[row.type] || configDefaults.qiniu
-    form.config = row.config ? { ...factory(), ...row.config } : factory()
+    let savedConfig = {}
+    try {
+      const res = await api.get(`/storages/${row.id}`)
+      if (res.code === 0 && res.data?.config) savedConfig = res.data.config
+    } catch { /* 拉取失败时仍允许编辑非敏感字段，服务端会跳过空敏感字段 */ }
+    form.config = { ...factory(), ...savedConfig }
   } else {
     editingId.value = null
     form.name = ''

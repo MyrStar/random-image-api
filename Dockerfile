@@ -13,6 +13,14 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 COPY --from=client-builder /app/client/dist ./client/dist
 
+# 数据目录归属 node 用户（容器以非 root 运行）
+RUN mkdir -p /app/data && chown -R node:node /app/data
+
+# 健康检查（PORT 可通过环境变量修改，需保持一致）
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD wget -qO- "http://127.0.0.1:${PORT:-3100}/health" || exit 1
+
 VOLUME /app/data
 EXPOSE 3100
+USER node
 CMD ["node", "server/index.js"]

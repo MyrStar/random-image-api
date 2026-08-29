@@ -29,8 +29,11 @@ class DatabaseWrapper {
 
   prepare(sql) {
     const db = this._db;
+    // sql.js 不接受 undefined 绑定值，统一转为 null（与 SQLite 语义一致）
+    const sanitize = params => params.map(p => (p === undefined ? null : p));
     return {
-      get(...params) {
+      get(...rawParams) {
+        const params = sanitize(rawParams);
         const stmt = db.prepare(sql);
         if (params.length) stmt.bind(params);
         if (stmt.step()) {
@@ -41,7 +44,8 @@ class DatabaseWrapper {
         stmt.free();
         return undefined;
       },
-      all(...params) {
+      all(...rawParams) {
+        const params = sanitize(rawParams);
         const results = [];
         const stmt = db.prepare(sql);
         if (params.length) stmt.bind(params);
@@ -51,17 +55,19 @@ class DatabaseWrapper {
         stmt.free();
         return results;
       },
-      run(...params) {
+      run(...rawParams) {
+        const params = sanitize(rawParams);
         const stmt = db.prepare(sql);
         if (params.length) stmt.bind(params);
         stmt.step();
         stmt.free();
         const changes = db.getRowsModified();
-        const lastId = db.exec("SELECT last_insert_rowid()");
-        return {
-          changes,
-          lastInsertRowid: lastId[0]?.values[0]?.[0] ?? 0,
-        };
+        let lastInsertRowid = 0;
+        if (changes > 0) {
+          const lastId = db.exec("SELECT last_insert_rowid()");
+          lastInsertRowid = lastId[0]?.values[0]?.[0] ?? 0;
+        }
+        return { changes, lastInsertRowid };
       },
     };
   }
@@ -81,10 +87,34 @@ class DatabaseWrapper {
     }
   }
 
+  /**
+   * 原子化落盘：
+   * 1. 先写入同目录临时文件（xxx.db.tmp）
+   * 2. 将当前库文件复制一份为 .bak（备份允许短暂撕裂，仅作恢复用）
+   * 3. rename 覆盖目标文件（同文件系统上 rename 是原子操作）
+   * 断电/强杀最坏情况：目标文件是上一次完整保存的版本，且还有 .bak 可恢复
+   */
   save() {
     const data = this._db.export();
     const buffer = Buffer.from(data);
-    fs.writeFileSync(config.dbPath, buffer);
+    const tmpPath = config.dbPath + '.tmp';
+    const bakPath = config.dbPath + '.bak';
+    fs.writeFileSync(tmpPath, buffer);
+    try {
+      if (fs.existsSync(config.dbPath)) {
+        fs.copyFileSync(config.dbPath, bakPath);
+      }
+      fs.renameSync(tmpPath, config.dbPath);
+    } catch (err) {
+      // rename 失败（如跨设备）时退化为直接覆盖，尽量保证数据落地
+      try {
+        fs.writeFileSync(config.dbPath, buffer);
+        fs.rmSync(tmpPath, { force: true });
+      } catch (inner) {
+        throw inner;
+      }
+      throw err;
+    }
   }
 }
 
@@ -149,6 +179,12 @@ async function initDatabase() {
 
   // 迁移：对已有 AUTOINCREMENT 的表重建（SQLite 不支持 ALTER TABLE DROP AUTOINCREMENT）
   _migrateRemoveAutoincrement(_db);
+
+  // 迁移：为 (category_id, storage_key) 建唯一约束（配合 INSERT OR IGNORE 防止重复同步）
+  _migrateUniqueStorageKey(_db);
+
+  // 索引：大分类随机取图用（按 id 范围定位）
+  _db.exec('CREATE INDEX IF NOT EXISTS idx_images_cat_id ON images(category_id, id)');
 
   return _db;
 }
@@ -239,6 +275,36 @@ function _migrateRemoveAutoincrement(db) {
     try { db.exec('ROLLBACK'); } catch {}
     db.pragma('foreign_keys = ON');
     console.error('[DB Migration] 移除 AUTOINCREMENT 失败（非致命，将继续启动）:', err.message);
+  }
+}
+
+/**
+ * 迁移：为 images(category_id, storage_key) 建唯一索引
+ * 老库中若已存在重复数据，先按保留最小 rowid 的策略去重
+ */
+function _migrateUniqueStorageKey(db) {
+  try {
+    const exists = db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_images_unique_key'").get();
+    if (exists) return;
+
+    const dupCount = db.prepare(`
+      SELECT COUNT(*) as count FROM (
+        SELECT category_id, storage_key FROM images
+        GROUP BY category_id, storage_key HAVING COUNT(*) > 1
+      )
+    `).get().count;
+    if (dupCount > 0) {
+      db.exec(`
+        DELETE FROM images WHERE rowid NOT IN (
+          SELECT MIN(rowid) FROM images GROUP BY category_id, storage_key
+        )
+      `);
+      console.log(`[DB Migration] 已去重 ${dupCount} 组重复图片记录`);
+    }
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_images_unique_key ON images(category_id, storage_key)');
+    console.log('[DB Migration] 已创建 images(category_id, storage_key) 唯一索引');
+  } catch (err) {
+    console.error('[DB Migration] 创建唯一索引失败（非致命，将继续启动）:', err.message);
   }
 }
 

@@ -6,15 +6,26 @@ const { createAdapter } = require('../adapters');
 const { decrypt } = require('../utils/crypto');
 const { encrypt } = require('../utils/crypto');
 const { getMimeType, isImage, getImageDimensions } = require('../utils/imageInfo');
+const { safeFetch } = require('../utils/safeFetch');
 const { nanoid } = require('../utils/nanoid');
 
 const CACHE_PREFIX = 'images:';
 
-// 大分类阈值：超过此数量使用 ORDER BY RANDOM() 而非全量加载
+// 大分类阈值：超过此数量使用索引随机定位，而非全量加载
 const LARGE_CATEGORY_THRESHOLD = 10000;
+
+// 修复尺寸时的下载并发数与单图大小上限
+const FIX_DIMENSIONS_CONCURRENCY = 4;
+const FIX_DIMENSIONS_MAX_BYTES = 100 * 1024 * 1024;
 
 // 适配器实例缓存，避免每次请求都创建
 const adapterCache = new Map();
+
+// 正在同步的分类（防并发重复同步）
+const syncingCategories = new Set();
+
+// 修复尺寸失败过的图片 ID（本轮运行内不再重试）
+const dimensionFixFailed = new Set();
 
 /**
  * 获取适配器实例（带缓存）
@@ -24,12 +35,23 @@ function getAdapter(storageId) {
     return adapterCache.get(storageId);
   }
   const storage = db.prepare('SELECT * FROM storage_configs WHERE id = ?').get(storageId);
-  if (!storage) throw new Error('存储源不存在');
+  if (!storage) throw createBizError('存储源不存在', 404);
 
-  const config = JSON.parse(decrypt(storage.config));
-  const adapter = createAdapter(storage.type, config, storage.endpoint);
+  let configObj;
+  try {
+    configObj = JSON.parse(decrypt(storage.config));
+  } catch (err) {
+    throw createBizError(`存储源「${storage.name}」密钥解密失败：${err.message}`, err.status || 400);
+  }
+  const adapter = createAdapter(storage.type, configObj, storage.endpoint);
   adapterCache.set(storageId, adapter);
   return adapter;
+}
+
+function createBizError(message, status = 400) {
+  const err = new Error(message);
+  err.status = status;
+  return err;
 }
 
 /**
@@ -41,6 +63,44 @@ function clearAdapterCache(storageId) {
   } else {
     adapterCache.clear();
   }
+}
+
+/**
+ * 归一化存储路径：去除首部 /，补齐尾部 /
+ * 避免拼接出的 key 缺少目录分隔符（images/wallpaper + abc.jpg -> wallpaperabc.jpg）
+ */
+function normalizeStoragePath(p) {
+  let s = String(p ?? '').trim();
+  if (!s) return '';
+  s = s.replace(/^\/+/, '');
+  if (!s.endsWith('/')) s += '/';
+  return s;
+}
+
+/**
+ * 大分类随机取图：利用 (category_id, id) 索引按随机 id 定位，O(log n)
+ * 避免每次请求 ORDER BY RANDOM() 全表扫描
+ */
+function randomFromLargeCategory(categoryId, imageCount) {
+  const range = db.prepare(
+    'SELECT MIN(id) as minId, MAX(id) as maxId FROM images WHERE category_id = ?'
+  ).get(categoryId);
+  if (!range || range.minId == null) return null;
+
+  const { minId, maxId } = range;
+  const span = maxId - minId + 1;
+  for (let i = 0; i < 6; i++) {
+    const target = minId + Math.floor(Math.random() * span);
+    const row = db.prepare(
+      'SELECT url, width, height, size, mime_type FROM images WHERE category_id = ? AND id >= ? ORDER BY id LIMIT 1'
+    ).get(categoryId, target);
+    if (row) return row;
+  }
+  // id 稀疏等极端情况兜底：随机 OFFSET（仅一次，不再全表排序）
+  const offset = Math.floor(Math.random() * imageCount);
+  return db.prepare(
+    'SELECT url, width, height, size, mime_type FROM images WHERE category_id = ? LIMIT 1 OFFSET ?'
+  ).get(categoryId, offset) || null;
 }
 
 /**
@@ -59,18 +119,14 @@ function getRandomImage(slug) {
     const category = db.prepare('SELECT id, cache_ttl FROM categories WHERE slug = ? AND status = 1').get(slug);
     if (!category) return null;
 
-    // 检查图片数量，大分类使用 ORDER BY RANDOM() 优化
+    // 检查图片数量，大分类使用索引随机定位优化
     const countResult = db.prepare('SELECT COUNT(*) as count FROM images WHERE category_id = ?').get(category.id);
     const imageCount = countResult.count;
 
     if (imageCount === 0) return null;
 
     if (imageCount > LARGE_CATEGORY_THRESHOLD) {
-      // 大分类：直接用SQL随机取一条，避免全量加载
-      const image = db.prepare(
-        'SELECT url, width, height, size, mime_type FROM images WHERE category_id = ? ORDER BY RANDOM() LIMIT 1'
-      ).get(category.id);
-      return image || null;
+      return randomFromLargeCategory(category.id, imageCount);
     }
 
     // 小分类：全量加载到缓存
@@ -80,7 +136,7 @@ function getRandomImage(slug) {
 
     if (!images.length) return null;
 
-    cache.set(cacheKey, images, category.cache_ttl);
+    cache.set(cacheKey, images, category.cache_ttl || 300);
   }
 
   if (!images.length) return null;
@@ -95,43 +151,50 @@ function getRandomImage(slug) {
  */
 async function uploadImage(categoryId, fileBuffer, filename) {
   const category = db.prepare('SELECT * FROM categories WHERE id = ?').get(categoryId);
-  if (!category) throw new Error('分类不存在');
+  if (!category) throw createBizError('分类不存在', 404);
 
   const adapter = getAdapter(category.storage_id);
   const ext = path.extname(filename);
   const key = `${category.storage_path}${nanoid()}${ext}`;
   const mimeType = getMimeType(filename);
 
-  // 上传到存储
+  // 先上传到存储，成功后再写数据库
   const result = await adapter.upload(key, fileBuffer, mimeType);
 
   // 解析图片宽高
   const { width, height } = getImageDimensions(fileBuffer);
 
-  // 写入数据库
-  const stmt = db.prepare(`
-    INSERT INTO images (category_id, filename, storage_key, url, size, width, height, mime_type)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  const info = stmt.run(categoryId, filename, key, result.url, fileBuffer.length, width, height, mimeType);
+  try {
+    const stmt = db.prepare(`
+      INSERT INTO images (category_id, filename, storage_key, url, size, width, height, mime_type)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const info = stmt.run(categoryId, filename, key, result.url, fileBuffer.length, width, height, mimeType);
 
-  // 清除缓存
-  cache.del(CACHE_PREFIX + category.slug);
+    // 清除缓存
+    cache.del(CACHE_PREFIX + category.slug);
 
-  return {
-    id: info.lastInsertRowid,
-    filename,
-    storage_key: key,
-    url: result.url,
-    size: fileBuffer.length,
-    width,
-    height,
-    mime_type: mimeType,
-  };
+    return {
+      id: info.lastInsertRowid,
+      filename,
+      storage_key: key,
+      url: result.url,
+      size: fileBuffer.length,
+      width,
+      height,
+      mime_type: mimeType,
+    };
+  } catch (err) {
+    // 数据库写入失败：补偿性删除已上传的远端文件，避免孤儿文件
+    try { await adapter.delete(key); } catch { /* 补偿失败仅记录，远端文件为孤儿不影响数据一致性 */ }
+    console.warn(`[uploadImage] 数据库写入失败，已回滚远端文件 ${key}`);
+    throw err;
+  }
 }
 
 /**
- * 删除图片
+ * 删除图片：先删数据库记录，再尽力删除远端文件
+ * 远端删除失败只留下孤儿文件（无害），不会出现"记录还在但文件已删"的死链
  */
 async function deleteImage(imageId) {
   const image = db.prepare(`
@@ -141,13 +204,17 @@ async function deleteImage(imageId) {
     WHERE i.id = ?
   `).get(imageId);
 
-  if (!image) throw new Error('图片不存在');
-
-  const adapter = getAdapter(image.storage_id);
-  await adapter.delete(image.storage_key);
+  if (!image) throw createBizError('图片不存在', 404);
 
   db.prepare('DELETE FROM images WHERE id = ?').run(imageId);
   cache.del(CACHE_PREFIX + image.slug);
+
+  try {
+    const adapter = getAdapter(image.storage_id);
+    await adapter.delete(image.storage_key);
+  } catch (err) {
+    console.warn(`[deleteImage] 远端文件删除失败（记录已删除）: ${image.storage_key}, ${err.message}`);
+  }
 
   return true;
 }
@@ -176,96 +243,137 @@ async function deleteImages(imageIds) {
  */
 async function syncFromStorage(categoryId) {
   const category = db.prepare('SELECT * FROM categories WHERE id = ?').get(categoryId);
-  if (!category) throw new Error('分类不存在');
+  if (!category) throw createBizError('分类不存在', 404);
 
-  const adapter = getAdapter(category.storage_id);
+  if (syncingCategories.has(categoryId)) {
+    throw createBizError('该分类正在同步中，请等待当前同步完成', 409);
+  }
+  syncingCategories.add(categoryId);
 
-  // 已存在的storage_key集合
-  const existing = new Set(
-    db.prepare('SELECT storage_key FROM images WHERE category_id = ?')
-      .all(categoryId)
-      .map(r => r.storage_key)
-  );
+  try {
+    const adapter = getAdapter(category.storage_id);
 
-  let added = 0;
-  let marker = null;
-  let hasMore = true;
+    // 已存在的storage_key集合
+    const existing = new Set(
+      db.prepare('SELECT storage_key FROM images WHERE category_id = ?')
+        .all(categoryId)
+        .map(r => r.storage_key)
+    );
 
-  while (hasMore) {
-    const result = await adapter.list(category.storage_path, marker, 1000);
+    let added = 0;
+    let marker = null;
+    let hasMore = true;
+    let guard = 0;
+    const MAX_PAGES = 10000; // 防御性上限，避免适配器分页异常导致死循环
 
-    for (const item of result.items) {
-      if (existing.has(item.key)) continue;
-      if (!isImage(item.key)) continue;
+    while (hasMore && guard++ < MAX_PAGES) {
+      const result = await adapter.list(category.storage_path, marker, 1000);
 
-      const filename = path.basename(item.key);
-      const url = adapter.getUrl(item.key);
-      const mimeType = getMimeType(filename);
+      for (const item of result.items) {
+        if (existing.has(item.key)) continue;
+        if (!isImage(item.key)) continue;
 
-      const info = db.prepare(`
-        INSERT OR IGNORE INTO images (category_id, filename, storage_key, url, size, mime_type)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(categoryId, filename, item.key, url, item.size, mimeType);
+        const filename = path.basename(item.key);
+        const url = adapter.getUrl(item.key);
+        const mimeType = getMimeType(filename);
 
-      // 只在实际插入时计数（changes > 0 表示插入成功）
-      if (info.changes > 0) {
-        added++;
+        const info = db.prepare(`
+          INSERT OR IGNORE INTO images (category_id, filename, storage_key, url, size, mime_type)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(categoryId, filename, item.key, url, item.size, mimeType);
+
+        // 只在实际插入时计数（唯一索引生效时 changes > 0 表示插入成功）
+        if (info.changes > 0) {
+          added++;
+          // 同步期间新插入的 key 也加入集合，防止分页重叠导致重复
+          existing.add(item.key);
+        }
       }
+
+      marker = result.nextMarker;
+      hasMore = !!marker;
     }
 
-    marker = result.nextMarker;
-    hasMore = !!marker;
+    // 清除缓存
+    cache.del(CACHE_PREFIX + category.slug);
+
+    return { added, total: existing.size };
+  } finally {
+    syncingCategories.delete(categoryId);
   }
-
-  // 清除缓存
-  cache.del(CACHE_PREFIX + category.slug);
-
-  return { added, total: existing.size + added };
 }
 
 /**
- * 修复图片尺寸：下载所有 0×0 的图片并解析宽高
+ * 修复图片尺寸：下载 0×0 的图片并解析宽高
+ * @param {number|null} categoryId - 仅处理指定分类（null 为全库）
  */
-async function fixDimensions() {
-  const fetch = require('node-fetch');
-  const images = db.prepare('SELECT * FROM images WHERE width = 0 AND height = 0').all();
+async function fixDimensions(categoryId = null) {
+  let sql = 'SELECT * FROM images WHERE width = 0 AND height = 0';
+  const params = [];
+  if (categoryId) {
+    sql += ' AND category_id = ?';
+    params.push(categoryId);
+  }
+  const images = db.prepare(sql).all(...params).filter(img => !dimensionFixFailed.has(img.id));
   let fixed = 0, failed = 0;
+  let cursor = 0;
 
-  for (const img of images) {
-    try {
-      const resp = await fetch(img.url, { timeout: 15000 });
-      if (!resp.ok) { failed++; continue; }
-      const buffer = Buffer.from(await resp.arrayBuffer());
-      const { width, height } = getImageDimensions(buffer);
-      if (width > 0 || height > 0) {
-        db.prepare('UPDATE images SET width = ?, height = ? WHERE id = ?').run(width, height, img.id);
-        fixed++;
-      } else {
+  // 简易并发池
+  async function worker() {
+    while (cursor < images.length) {
+      const img = images[cursor++];
+      try {
+        const resp = await safeFetch(img.url, { timeoutMs: 15000, maxBytes: FIX_DIMENSIONS_MAX_BYTES });
+        const { width, height } = getImageDimensions(resp.buffer);
+        if (width > 0 || height > 0) {
+          db.prepare('UPDATE images SET width = ?, height = ? WHERE id = ?').run(width, height, img.id);
+          dimensionFixFailed.delete(img.id);
+          fixed++;
+        } else {
+          dimensionFixFailed.add(img.id);
+          failed++;
+        }
+      } catch {
+        dimensionFixFailed.add(img.id);
         failed++;
       }
-    } catch {
-      failed++;
     }
   }
 
-  // 清除所有分类缓存
-  const categories = db.prepare('SELECT slug FROM categories').all();
+  await Promise.all(
+    Array.from({ length: Math.min(FIX_DIMENSIONS_CONCURRENCY, images.length || 1) }, worker)
+  );
+
+  // 清除受影响分类的缓存
+  const categories = categoryId
+    ? db.prepare('SELECT slug FROM categories WHERE id = ?').all(categoryId)
+    : db.prepare('SELECT slug FROM categories').all();
   for (const c of categories) cache.del(CACHE_PREFIX + c.slug);
 
   return { total: images.length, fixed, failed };
 }
 
 /**
+ * 分页参数校验
+ */
+function clampPage(page, size) {
+  const p = Number.isFinite(page) && page >= 1 ? Math.floor(page) : 1;
+  const s = Number.isFinite(size) && size >= 1 ? Math.min(Math.floor(size), 200) : 20;
+  return [p, s];
+}
+
+/**
  * 获取图片列表（分页）
  */
 function getImages(categoryId, page = 1, size = 20) {
-  const offset = (page - 1) * size;
+  const [p, s] = clampPage(page, size);
+  const offset = (p - 1) * s;
   const total = db.prepare('SELECT COUNT(*) as count FROM images WHERE category_id = ?').get(categoryId).count;
   const items = db.prepare(
-    'SELECT * FROM images WHERE category_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?'
-  ).all(categoryId, size, offset);
+    'SELECT * FROM images WHERE category_id = ? ORDER BY id DESC LIMIT ? OFFSET ?'
+  ).all(categoryId, s, offset);
 
-  return { items, total, page, size, pages: Math.ceil(total / size) };
+  return { items, total, page: p, size: s, pages: Math.ceil(total / s) };
 }
 
 /**
@@ -299,7 +407,7 @@ function updateStorage(id, data) {
     const existing = db.prepare('SELECT config FROM storage_configs WHERE id = ?').get(id);
     let mergedConfig = {};
     if (existing) {
-      try { mergedConfig = JSON.parse(decrypt(existing.config)); } catch {}
+      mergedConfig = JSON.parse(decrypt(existing.config));
     }
     mergedConfig = { ...mergedConfig, ...data.config };
     fields.push('config = ?');
@@ -318,7 +426,7 @@ function updateStorage(id, data) {
 function deleteStorage(id) {
   // 检查是否有关联的分类
   const count = db.prepare('SELECT COUNT(*) as count FROM categories WHERE storage_id = ?').get(id).count;
-  if (count > 0) throw new Error('该存储源下还有分类，请先删除关联分类');
+  if (count > 0) throw createBizError('该存储源下还有分类，请先删除关联分类');
   db.prepare('DELETE FROM storage_configs WHERE id = ?').run(id);
   clearAdapterCache(id);
 }
@@ -350,7 +458,7 @@ function createCategory(data) {
     data.slug,
     data.description || '',
     data.storage_id,
-    data.storage_path,
+    normalizeStoragePath(data.storage_path),
     data.status ?? 1,
     data.cache_ttl ?? 300
   );
@@ -358,6 +466,10 @@ function createCategory(data) {
 }
 
 function updateCategory(id, data) {
+  // 更新前取旧信息：改 slug 时需要清理旧 slug 的缓存
+  const old = db.prepare('SELECT slug FROM categories WHERE id = ?').get(id);
+  if (!old) throw createBizError('分类不存在', 404);
+
   const fields = [];
   const values = [];
 
@@ -365,7 +477,7 @@ function updateCategory(id, data) {
   if (data.slug !== undefined) { fields.push('slug = ?'); values.push(data.slug); }
   if (data.description !== undefined) { fields.push('description = ?'); values.push(data.description); }
   if (data.storage_id !== undefined) { fields.push('storage_id = ?'); values.push(data.storage_id); }
-  if (data.storage_path !== undefined) { fields.push('storage_path = ?'); values.push(data.storage_path); }
+  if (data.storage_path !== undefined) { fields.push('storage_path = ?'); values.push(normalizeStoragePath(data.storage_path)); }
   if (data.status !== undefined) { fields.push('status = ?'); values.push(data.status); }
   if (data.cache_ttl !== undefined) { fields.push('cache_ttl = ?'); values.push(data.cache_ttl); }
   // categories 表没有 updated_at 列，不需要更新
@@ -373,9 +485,10 @@ function updateCategory(id, data) {
 
   db.prepare(`UPDATE categories SET ${fields.join(', ')} WHERE id = ?`).run(...values);
 
-  // 清除该分类的缓存
+  // 清除新旧 slug 的缓存
+  cache.del(CACHE_PREFIX + old.slug);
   const cat = db.prepare('SELECT slug FROM categories WHERE id = ?').get(id);
-  if (cat) cache.del(CACHE_PREFIX + cat.slug);
+  if (cat && cat.slug !== old.slug) cache.del(CACHE_PREFIX + cat.slug);
 }
 
 function deleteCategory(id) {
@@ -404,9 +517,6 @@ function deleteCategory(id) {
 
   // 清除该分类的缓存
   cache.del(CACHE_PREFIX + cat.slug);
-
-  // 清除适配器缓存
-  clearAdapterCache(cat.storage_id);
 }
 
 /**
@@ -425,16 +535,17 @@ function getStats() {
  * 获取所有图片（用于数据浏览）
  */
 function getAllImages(page = 1, size = 50) {
-  const offset = (page - 1) * size;
+  const [p, s] = clampPage(page, Math.min(size, 200));
+  const offset = (p - 1) * s;
   const total = db.prepare('SELECT COUNT(*) as count FROM images').get().count;
   const items = db.prepare(`
     SELECT i.*, c.name as category_name, c.slug as category_slug
     FROM images i
     LEFT JOIN categories c ON i.category_id = c.id
     ORDER BY i.id DESC LIMIT ? OFFSET ?
-  `).all(size, offset);
+  `).all(s, offset);
 
-  return { items, total, page, size, pages: Math.ceil(total / size) };
+  return { items, total, page: p, size: s, pages: Math.ceil(total / s) };
 }
 
 module.exports = {

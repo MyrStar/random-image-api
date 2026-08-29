@@ -3,6 +3,9 @@ const router = express.Router();
 const auth = require('../../middleware/auth');
 const { getDb } = require('../../database');
 const db = new Proxy({}, { get(_, prop) { return getDb()[prop]; } });
+const cache = require('../../services/cacheService');
+const imageService = require('../../services/imageService');
+const { sendCaught } = require('../../utils/respond');
 
 router.use(auth);
 
@@ -43,7 +46,7 @@ router.get('/tables', (req, res) => {
 
     res.json({ code: 0, data: result });
   } catch (err) {
-    res.status(500).json({ code: 500, message: err.message });
+    sendCaught(res, err);
   }
 });
 
@@ -58,8 +61,10 @@ router.get('/:table', (req, res) => {
       return res.status(400).json({ code: 400, message: '不允许访问该表' });
     }
 
-    const { page = 1, size = 50, sort, order = 'DESC', search } = req.query;
-    const offset = (parseInt(page) - 1) * parseInt(size);
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const size = Math.min(Math.max(parseInt(req.query.size, 10) || 50, 1), 200);
+    const { sort, order = 'DESC', search } = req.query;
+    const offset = (page - 1) * size;
 
     // 获取列信息
     const columns = db.prepare(`PRAGMA table_info("${table}")`).all();
@@ -92,7 +97,7 @@ router.get('/:table', (req, res) => {
 
     const total = db.prepare(`SELECT COUNT(*) as count FROM "${table}"${whereClause}`).get(...countParams).count;
 
-    queryParams.push(parseInt(size), offset);
+    queryParams.push(size, offset);
     const items = db.prepare(
       `SELECT * FROM "${table}"${whereClause}${orderClause} LIMIT ? OFFSET ?`
     ).all(...queryParams);
@@ -102,20 +107,20 @@ router.get('/:table', (req, res) => {
       data: {
         items,
         total,
-        page: parseInt(page),
-        size: parseInt(size),
-        pages: Math.ceil(total / parseInt(size)),
+        page,
+        size,
+        pages: Math.ceil(total / size),
         columns: columnNames,
       },
     });
   } catch (err) {
-    res.status(500).json({ code: 500, message: err.message });
+    sendCaught(res, err);
   }
 });
 
 /**
  * PUT /admin/api/db/:table/:id
- * 更新记录
+ * 更新记录（绕过业务层的原始编辑，写后清除图片缓存以保证公开API数据一致）
  */
 router.put('/:table/:id', (req, res) => {
   try {
@@ -141,6 +146,14 @@ router.put('/:table/:id', (req, res) => {
       return res.status(400).json({ code: 400, message: '没有要更新的字段' });
     }
 
+    // 仅支持标量值，对象/数组一律拒绝
+    for (const f of fields) {
+      const v = data[f];
+      if (!(v === null || ['string', 'number', 'boolean'].includes(typeof v))) {
+        return res.status(400).json({ code: 400, message: `字段 ${f} 的值类型不支持` });
+      }
+    }
+
     const values = fields.map(f => data[f]);
     let setClause = fields.map(f => `"${f}" = ?`).join(', ');
 
@@ -152,17 +165,20 @@ router.put('/:table/:id', (req, res) => {
 
     db.prepare(`UPDATE "${table}" SET ${setClause} WHERE id = ?`).run(...values, id);
 
+    // 直接改库绕过了业务层，清空缓存保证公开 API 不供出旧数据
+    cache.clear();
+
     res.json({ code: 0, message: '更新成功' });
   } catch (err) {
-    res.status(500).json({ code: 500, message: err.message });
+    sendCaught(res, err);
   }
 });
 
 /**
  * DELETE /admin/api/db/:table/:id
- * 删除记录
+ * 删除记录（images/categories 走业务层，保证远端文件与缓存一致）
  */
-router.delete('/:table/:id', (req, res) => {
+router.delete('/:table/:id', async (req, res) => {
   try {
     const { table, id } = req.params;
     if (!ALLOWED_TABLES.includes(table)) {
@@ -174,10 +190,14 @@ router.delete('/:table/:id', (req, res) => {
       return res.status(400).json({ code: 400, message: '请通过存储源管理页面删除存储源' });
     }
 
-    db.prepare(`DELETE FROM "${table}" WHERE id = ?`).run(id);
+    if (table === 'images') {
+      await imageService.deleteImage(id);
+    } else if (table === 'categories') {
+      imageService.deleteCategory(id);
+    }
     res.json({ code: 0, message: '删除成功' });
   } catch (err) {
-    res.status(500).json({ code: 500, message: err.message });
+    sendCaught(res, err);
   }
 });
 

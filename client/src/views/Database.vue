@@ -132,7 +132,12 @@ async function saveEdit() {
 }
 
 async function handleDelete(row) {
-  await ElMessageBox.confirm(`确定删除 ID=${row.id} 的记录？`, '确认')
+  const tips = {
+    categories: '将同时删除该分类下的所有图片记录及存储中的对应文件（与分类管理页的删除行为一致）',
+    images: '将同时删除存储源中的对应文件',
+  }
+  const extra = tips[activeTable.value] ? `\n\n注意：${tips[activeTable.value]}` : ''
+  await ElMessageBox.confirm(`确定删除 ${activeTable.value} 表中 ID=${row.id} 的记录？${extra}`, '确认')
   await api.delete(`/db/${activeTable.value}/${row.id}`)
   ElMessage.success('删除成功')
   loadData()

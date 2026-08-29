@@ -56,8 +56,10 @@ class CloudflareR2Adapter extends StorageAdapter {
       const domain = this.publicDomain.replace(/\/$/, '');
       return `https://${domain}/${key}`;
     }
-    // 无法生成有效URL，返回提示
-    return `https://<需配置publicDomain或endpoint>/${key}`;
+    // 无法生成有效URL：直接报错，避免把占位符当作图片URL写进数据库
+    const err = new Error('R2 存储源未配置公开访问地址，请在配置中填写「公共域名(publicDomain)」或「访问域名(endpoint)」');
+    err.status = 400;
+    throw err;
   }
 
   async list(prefix, marker = null, limit = 1000) {
@@ -83,6 +85,10 @@ class CloudflareR2Adapter extends StorageAdapter {
 
   async test() {
     try {
+      // 没有公共访问地址时无法生成图片URL，直接在测试阶段给出明确提示
+      if (!this.endpoint && !this.publicDomain) {
+        return { success: false, message: '连接配置不完整：请填写「公共域名(publicDomain)」（R2控制台开启公共访问后获取）或「访问域名(endpoint)」，否则无法生成图片URL' };
+      }
       const result = await this.list('', null, 1);
       const hasFiles = result.items.length > 0;
       return { success: true, message: hasFiles ? '连接成功，存储桶中有文件' : '连接成功，存储桶为空' };

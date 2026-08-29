@@ -68,11 +68,10 @@ class MinIOAdapter extends StorageAdapter {
   }
 
   async list(prefix, marker = null, limit = 1000) {
+    // 使用 ListObjectsV2 + startAfter 服务端分页，避免每页都从头全量扫描（O(n²)）
     return new Promise((resolve, reject) => {
       const items = [];
-      const stream = this.client.listObjects(this.bucket, prefix || '', true);
       let count = 0;
-      let passedMarker = !marker;
       let resolved = false;
 
       const finish = () => {
@@ -80,18 +79,15 @@ class MinIOAdapter extends StorageAdapter {
         resolved = true;
         resolve({
           items,
-          nextMarker: count >= limit ? items[items.length - 1]?.key : null,
+          nextMarker: count >= limit ? (items[items.length - 1]?.key ?? null) : null,
         });
       };
+
+      const stream = this.client.listObjectsV2(this.bucket, prefix || '', true, marker || undefined);
 
       stream.on('data', obj => {
         if (count >= limit) {
           stream.destroy();
-          return;
-        }
-        // 跳过 marker 之前的对象
-        if (!passedMarker) {
-          if (obj.name === marker) passedMarker = true;
           return;
         }
         items.push({

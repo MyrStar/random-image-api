@@ -7,7 +7,12 @@ function authMiddleware(req, res, next) {
     return res.status(401).json({ code: 401, message: '未登录' });
   }
   try {
-    const decoded = jwt.verify(token, config.jwt.secret);
+    // 固定 HS256，防止算法混淆
+    const decoded = jwt.verify(token, config.jwt.secret, { algorithms: ['HS256'] });
+    // 修改密码后，早于修改时间签发的 token 一律失效
+    if (decoded.iat && config.passwordChangedAt && decoded.iat < config.passwordChangedAt) {
+      return res.status(401).json({ code: 401, message: '密码已修改，请重新登录' });
+    }
     req.user = decoded;
     next();
   } catch {

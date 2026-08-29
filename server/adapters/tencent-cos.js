@@ -1,14 +1,25 @@
-const COS = require('cos-nodejs-sdk-v5');
+const { S3Client, PutObjectCommand, DeleteObjectCommand, ListObjectsV2Command } = require('@aws-sdk/client-s3');
 const StorageAdapter = require('./base');
 
+/**
+ * 腾讯云 COS 适配器
+ * 基于 AWS S3 兼容协议实现（cos-nodejs-sdk-v5 依赖链存在多个严重漏洞，已弃用）：
+ * endpoint: https://cos.{region}.myqcloud.com，Bucket: {name}-{appid}，签名用 SecretId/SecretKey
+ */
 class TencentCOSAdapter extends StorageAdapter {
   constructor(config, endpoint) {
     super(config, endpoint);
     this.bucket = config.bucket;
     this.region = config.region || 'ap-guangzhou';
-    this.cos = new COS({
-      SecretId: config.secretId,
-      SecretKey: config.secretKey,
+
+    this.client = new S3Client({
+      region: this.region,
+      // 虚拟主机风格：https://{bucket}.cos.{region}.myqcloud.com（COS 官方 S3 兼容格式）
+      endpoint: `https://cos.${this.region}.myqcloud.com`,
+      credentials: {
+        accessKeyId: config.secretId,
+        secretAccessKey: config.secretKey,
+      },
     });
   }
 
@@ -20,26 +31,24 @@ class TencentCOSAdapter extends StorageAdapter {
   async upload(key, buffer, mimeType) {
     const params = {
       Bucket: this._getBucket(),
-      Region: this.region,
       Key: key,
       Body: buffer,
     };
     if (mimeType) params.ContentType = mimeType;
 
-    await this.cos.putObject(params);
+    await this.client.send(new PutObjectCommand(params));
     return { url: this.getUrl(key) };
   }
 
   async delete(key) {
     try {
-      await this.cos.deleteObject({
+      await this.client.send(new DeleteObjectCommand({
         Bucket: this._getBucket(),
-        Region: this.region,
         Key: key,
-      });
+      }));
     } catch (err) {
-      // NoSuchKey 也算成功
-      if (err.statusCode === 204 || err.statusCode === 404) return;
+      // 文件不存在也视为成功
+      if (err.name === 'NoSuchKey' || err.$metadata?.httpStatusCode === 404 || err.$metadata?.httpStatusCode === 204) return;
       throw err;
     }
   }
@@ -53,28 +62,23 @@ class TencentCOSAdapter extends StorageAdapter {
   }
 
   async list(prefix, marker = null, limit = 1000) {
-    return new Promise((resolve, reject) => {
-      const params = {
-        Bucket: this._getBucket(),
-        Region: this.region,
-        Prefix: prefix,
-        MaxKeys: limit,
-      };
-      if (marker) params.Marker = marker;
+    const params = {
+      Bucket: this._getBucket(),
+      Prefix: prefix || undefined,
+      MaxKeys: limit,
+    };
+    if (marker) params.ContinuationToken = marker;
 
-      this.cos.getBucket(params, (err, data) => {
-        if (err) return reject(err);
-        const items = (data.Contents || []).map(item => ({
-          key: item.Key,
-          size: parseInt(item.Size, 10),
-          lastModified: item.LastModified,
-        }));
-        resolve({
-          items,
-          nextMarker: data.IsTruncated ? data.NextMarker : null,
-        });
-      });
-    });
+    const result = await this.client.send(new ListObjectsV2Command(params));
+    const items = (result.Contents || []).map(item => ({
+      key: item.Key,
+      size: Number(item.Size) || 0,
+      lastModified: item.LastModified,
+    }));
+    return {
+      items,
+      nextMarker: result.IsTruncated ? (result.NextContinuationToken || null) : null,
+    };
   }
 
   async test() {
@@ -84,12 +88,12 @@ class TencentCOSAdapter extends StorageAdapter {
       return { success: true, message: hasFiles ? '连接成功，存储桶中有文件' : '连接成功，存储桶为空' };
     } catch (err) {
       let msg = err.message;
-      if (err.statusCode === 403) {
-        msg = '认证失败或权限不足，请检查 SecretId、SecretKey 和 Bucket 是否正确';
-      } else if (err.statusCode === 404) {
-        msg = '存储桶不存在，请检查 Bucket 名称和区域(Region)是否匹配';
-      } else if (err.code === 'InvalidAccessKeyId' || err.code === 'SignatureDoesNotMatch') {
+      if (err.name === 'InvalidAccessKeyId' || err.name === 'SignatureDoesNotMatch') {
         msg = '认证失败，请检查 SecretId、SecretKey 是否正确';
+      } else if (err.name === 'NoSuchBucket') {
+        msg = '存储桶不存在，请检查 Bucket 名称和区域(Region)是否匹配';
+      } else if (err.$metadata?.httpStatusCode === 403) {
+        msg = '认证失败或权限不足，请检查 SecretId、SecretKey 和 Bucket 是否正确';
       }
       return { success: false, message: `连接失败: ${msg}` };
     }

@@ -22,12 +22,12 @@ function timingSafeEqual(a, b) {
 
 /**
  * POST /admin/api/login
- * 登录接口
+ * 登录接口（密码以 bcrypt 哈希校验，见 config.verifyAdminPassword）
  */
 router.post('/login', (req, res) => {
   const { username, password } = req.body;
 
-  if (timingSafeEqual(username, config.admin.user) && timingSafeEqual(password, config.admin.pass)) {
+  if (timingSafeEqual(username, config.admin.user) && config.verifyAdminPassword(password)) {
     const token = jwt.sign({ user: username }, config.jwt.secret, {
       expiresIn: config.jwt.expiresIn,
     });

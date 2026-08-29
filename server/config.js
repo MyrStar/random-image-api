@@ -1,5 +1,6 @@
 const path = require('path');
 const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 /**
@@ -10,6 +11,12 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
  * 1. 数据库 system_settings 表（运行时可修改）
  * 2. .env 环境变量（首次启动的初始值）
  * 3. 代码中的默认值
+ *
+ * 安全设计：
+ * - 管理员密码以 bcrypt 哈希形式存库（键 adminPassHash），数据库中不落明文
+ * - 在线修改密码后会记录 passwordChangedAt，早于该时间签发的 JWT 全部失效
+ * - 启动时校验默认弱密钥：生产环境（NODE_ENV=production）直接拒绝启动，
+ *   除非显式设置 ALLOW_INSECURE_DEFAULTS=1
  */
 
 // 从 .env 读取的初始默认值
@@ -34,6 +41,11 @@ const envDefaults = {
 // 当前运行时配置（初始从 envDefaults 加载）
 const _config = { ...envDefaults };
 
+// 管理员密码的 bcrypt 哈希（运行时校验用；明文仅存在于内存）
+let _adminPassHash = null;
+// 密码最后修改时间（unix 秒），早于该时间签发的 JWT 失效
+let _passwordChangedAt = 0;
+
 // 数据库是否已初始化
 let _dbReady = false;
 
@@ -46,6 +58,29 @@ const _hotReloadCallbacks = [];
  */
 function onHotReload(fn) {
   _hotReloadCallbacks.push(fn);
+}
+
+/** 数据库中保存/更新一个设置行 */
+function upsertRow(db, key, value) {
+  db.prepare(`
+    INSERT INTO system_settings (key, value, updated_at)
+    VALUES (?, ?, datetime('now','localtime'))
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now','localtime')
+  `).run(key, String(value));
+}
+
+/**
+ * 持久化设置：普通键直接存；密码键只存 bcrypt 哈希，并清除历史明文
+ */
+function persistSetting(db, key, value) {
+  if (key === 'adminPass') {
+    _adminPassHash = bcrypt.hashSync(String(value), 10);
+    upsertRow(db, 'adminPassHash', _adminPassHash);
+    // 清理旧版本可能遗留的明文密码
+    db.prepare('DELETE FROM system_settings WHERE key = ?').run('adminPass');
+    return;
+  }
+  upsertRow(db, key, value);
 }
 
 /**
@@ -66,24 +101,89 @@ function loadFromDatabase() {
       )
     `);
 
+    const numericKeys = [
+      'port', 'uploadMaxSize', 'uploadMaxFiles', 'cacheMaxSize',
+      'resizeMaxDimension', 'autoSaveInterval', 'rateLimitPublic', 'rateLimitLogin'
+    ];
     const rows = db.prepare('SELECT key, value FROM system_settings').all();
     for (const row of rows) {
+      if (row.key === 'adminPassHash') {
+        _adminPassHash = row.value;
+        continue;
+      }
+      if (row.key === 'passwordChangedAt') {
+        _passwordChangedAt = parseInt(row.value) || 0;
+        continue;
+      }
+      if (row.key === 'adminPass') {
+        // 迁移：旧版本把明文密码写进了数据库，转为哈希并删除明文
+        _adminPassHash = bcrypt.hashSync(row.value, 10);
+        db.transaction(() => {
+          upsertRow(db, 'adminPassHash', _adminPassHash);
+          db.prepare('DELETE FROM system_settings WHERE key = ?').run('adminPass');
+        });
+        console.log('[Config] 已将数据库中的明文管理员密码迁移为 bcrypt 哈希');
+        continue;
+      }
       if (row.key in _config) {
-        // 数值类型的配置需要转换
-        const numericKeys = [
-          'port', 'uploadMaxSize', 'uploadMaxFiles', 'cacheMaxSize',
-          'resizeMaxDimension', 'autoSaveInterval', 'rateLimitPublic', 'rateLimitLogin'
-        ];
         _config[row.key] = numericKeys.includes(row.key)
           ? parseInt(row.value)
           : row.value;
       }
     }
+
+    // 若从未设置过密码（无哈希），用 .env 值生成内存哈希，校验统一走 bcrypt
+    if (!_adminPassHash) {
+      _adminPassHash = bcrypt.hashSync(String(_config.adminPass), 10);
+    }
+
     _dbReady = true;
   } catch (e) {
     // 数据库还没初始化，使用默认值
     console.log('[Config] 数据库未就绪，使用环境变量/默认配置');
+    if (!_adminPassHash) {
+      _adminPassHash = bcrypt.hashSync(String(_config.adminPass), 10);
+    }
   }
+}
+
+/**
+ * 启动安全校验：检测默认弱密钥
+ * 生产环境检测到弱密钥时抛错（由入口拒绝启动），
+ * 设置 ALLOW_INSECURE_DEFAULTS=1 可显式跳过（不推荐）。
+ */
+function checkStartupSecurity() {
+  const insecureDefaults = {
+    adminPass: ['admin123', 'your_secure_password_here'],
+    jwtSecret: ['change-me-in-production', 'your_jwt_secret_here'],
+    encryptKey: ['0123456789abcdef0123456789abcdef'],
+  };
+
+  const problems = [];
+  // 密码已经在线设置过（有哈希）时，.env 里的默认值不再作为校验依据
+  if (!_adminPassHash && (!_config.adminPass || insecureDefaults.adminPass.includes(_config.adminPass))) {
+    problems.push('管理员密码 (ADMIN_PASS) 仍为默认/示例值');
+  }
+  if (!_config.jwtSecret || insecureDefaults.jwtSecret.includes(_config.jwtSecret)) {
+    problems.push('JWT 密钥 (JWT_SECRET) 仍为默认/示例值，任何人可伪造登录凭证');
+  } else if (String(_config.jwtSecret).length < 16) {
+    problems.push('JWT 密钥 (JWT_SECRET) 过短（建议 ≥ 32 位随机字符串）');
+  }
+  if (!_config.encryptKey || insecureDefaults.encryptKey.includes(_config.encryptKey)) {
+    problems.push('加密密钥 (ENCRYPT_KEY) 仍为公开的默认值，存储凭证形同明文');
+  }
+
+  if (problems.length === 0) return;
+
+  const text = '检测到不安全的默认配置:\n  - ' + problems.join('\n  - ')
+    + '\n请在 .env 中修改这些值后再部署（随机生成命令见 README）';
+
+  if (process.env.NODE_ENV === 'production' && process.env.ALLOW_INSECURE_DEFAULTS !== '1') {
+    throw new Error(text);
+  }
+  console.warn('┌──────────────────────────────────────────────');
+  console.warn('│ [安全警告] ' + text.replace(/\n/g, '\n│ '));
+  console.warn('└──────────────────────────────────────────────');
 }
 
 /**
@@ -99,24 +199,35 @@ function setSetting(key, value) {
 
   if (_dbReady) {
     const { getDb } = require('./database');
-    const db = getDb();
-    db.prepare(`
-      INSERT INTO system_settings (key, value, updated_at)
-      VALUES (?, ?, datetime('now','localtime'))
-      ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now','localtime')
-    `).run(key, String(value), String(value));
+    persistSetting(getDb(), key, value);
+  }
+
+  if (key === 'adminPass' && oldValue !== value) {
+    touchPasswordChangedAt();
   }
 
   // 值实际发生变化时，触发热更新回调
   if (oldValue !== value) {
-    for (const fn of _hotReloadCallbacks) {
-      try { fn(key, value, oldValue); } catch (e) { console.error('[Config HotReload Error]', e.message); }
-    }
+    fireHotReload(key, value, oldValue);
+  }
+}
+
+function fireHotReload(key, value, oldValue) {
+  for (const fn of _hotReloadCallbacks) {
+    try { fn(key, value, oldValue); } catch (e) { console.error('[Config HotReload Error]', e.message); }
+  }
+}
+
+function touchPasswordChangedAt() {
+  _passwordChangedAt = Math.floor(Date.now() / 1000);
+  if (_dbReady) {
+    const { getDb } = require('./database');
+    upsertRow(getDb(), 'passwordChangedAt', _passwordChangedAt);
   }
 }
 
 /**
- * 批量更新配置
+ * 批量更新配置（单事务持久化，保证原子性）
  */
 function updateSettings(settings) {
   const changes = [];
@@ -134,25 +245,39 @@ function updateSettings(settings) {
     const { getDb } = require('./database');
     const db = getDb();
     db.transaction(() => {
-      const stmt = db.prepare(`
-        INSERT INTO system_settings (key, value, updated_at)
-        VALUES (?, ?, datetime('now','localtime'))
-        ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = datetime('now','localtime')
-      `);
       for (const key of changes) {
-        stmt.run(key, String(_config[key]), String(_config[key]));
+        persistSetting(db, key, _config[key]);
+      }
+      if (changes.includes('adminPass')) {
+        upsertRow(db, 'passwordChangedAt', Math.floor(Date.now() / 1000));
       }
     });
   }
 
-  // 触发热更新回调（与 setSetting 保持一致，传入真实的 oldValue）
+  if (changes.includes('adminPass')) {
+    _passwordChangedAt = Math.floor(Date.now() / 1000);
+  }
+
+  // 触发热更新回调（传入真实的 oldValue）
   for (const key of changes) {
-    for (const fn of _hotReloadCallbacks) {
-      try { fn(key, _config[key], oldValues[key]); } catch (e) { console.error('[Config HotReload Error]', e.message); }
-    }
+    fireHotReload(key, _config[key], oldValues[key]);
   }
 
   return changes;
+}
+
+/**
+ * 校验管理员密码（bcrypt）
+ */
+function verifyAdminPassword(input) {
+  if (_adminPassHash) {
+    try {
+      return bcrypt.compareSync(String(input ?? ''), _adminPassHash);
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
 
 /**
@@ -162,7 +287,7 @@ function getAllSettings() {
   return {
     port: _config.port,
     adminUser: _config.adminUser,
-    adminPass: maskSecret(_config.adminPass),
+    adminPass: _adminPassHash ? '********' : maskSecret(_config.adminPass),
     jwtSecret: maskSecret(_config.jwtSecret),
     encryptKey: maskSecret(_config.encryptKey),
     dbPath: _config.dbPath,
@@ -210,21 +335,24 @@ module.exports = {
   get autoSaveInterval() { return _config.autoSaveInterval; },
   get rateLimitPublic() { return _config.rateLimitPublic; },
   get rateLimitLogin() { return _config.rateLimitLogin; },
+  get passwordChangedAt() { return _passwordChangedAt; },
 
   // 方法
   loadFromDatabase,
+  checkStartupSecurity,
   setSetting,
   updateSettings,
   getAllSettings,
   getRaw,
   maskSecret,
   onHotReload,
+  verifyAdminPassword,
 
   // 所有配置项的 key 列表和元信息
   SETTINGS_META: {
     port: { label: '服务端口', type: 'number', group: 'basic', min: 1, max: 65535, restart: false, hotReload: true },
     adminUser: { label: '管理员用户名', type: 'text', group: 'security', restart: false },
-    adminPass: { label: '管理员密码', type: 'password', group: 'security', restart: false, secret: true },
+    adminPass: { label: '管理员密码', type: 'password', group: 'security', restart: false, secret: true, warning: '修改后所有已登录会话将立即失效，需重新登录' },
     jwtSecret: { label: 'JWT 密钥', type: 'password', group: 'security', restart: false, secret: true, warning: '修改后所有已登录用户需重新登录' },
     encryptKey: { label: '加密密钥', type: 'password', group: 'security', restart: false, secret: true, warning: '修改后已有存储源密钥将无法解密！请先删除所有存储源再修改' },
     publicUrl: { label: '公开访问地址', type: 'text', group: 'basic', restart: false },

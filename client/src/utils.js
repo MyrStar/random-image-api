@@ -12,20 +12,30 @@ export function formatSize(bytes) {
 }
 
 /**
- * 复制文本到剪贴板（兼容旧浏览器）
+ * 复制文本到剪贴板（含旧浏览器降级）
+ * 注意 navigator.clipboard 是异步 API，需要 await 才能感知失败
  * @param {string} text - 要复制的文本
+ * @returns {Promise<boolean>} 是否复制成功
  */
-export function copyToClipboard(text) {
+export async function copyToClipboard(text) {
   try {
-    navigator.clipboard.writeText(text)
-  } catch {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text)
+      return true
+    }
+  } catch { /* 降级到 execCommand */ }
+
+  try {
     const ta = document.createElement('textarea')
     ta.value = text
     ta.style.position = 'fixed'
     ta.style.left = '-9999px'
     document.body.appendChild(ta)
     ta.select()
-    document.execCommand('copy')
+    const ok = document.execCommand('copy')
     document.body.removeChild(ta)
+    return ok
+  } catch {
+    return false
   }
 }

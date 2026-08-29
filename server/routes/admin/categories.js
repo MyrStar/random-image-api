@@ -3,6 +3,7 @@ const router = express.Router();
 const auth = require('../../middleware/auth');
 const imageService = require('../../services/imageService');
 const config = require('../../config');
+const { sendCaught } = require('../../utils/respond');
 
 router.use(auth);
 
@@ -19,7 +20,7 @@ router.get('/', (req, res) => {
     }));
     res.json({ code: 0, data });
   } catch (err) {
-    res.status(500).json({ code: 500, message: err.message });
+    sendCaught(res, err);
   }
 });
 
@@ -32,7 +33,7 @@ router.get('/:id', (req, res) => {
     if (!category) return res.status(404).json({ code: 404, message: '分类不存在' });
     res.json({ code: 0, data: category });
   } catch (err) {
-    res.status(500).json({ code: 500, message: err.message });
+    sendCaught(res, err);
   }
 });
 
@@ -55,7 +56,7 @@ router.post('/', (req, res) => {
     if (err.message.includes('UNIQUE')) {
       return res.status(400).json({ code: 400, message: 'slug已存在，请换一个' });
     }
-    res.status(500).json({ code: 500, message: err.message });
+    sendCaught(res, err);
   }
 });
 
@@ -73,7 +74,7 @@ router.put('/:id', (req, res) => {
     if (err.message.includes('UNIQUE')) {
       return res.status(400).json({ code: 400, message: 'slug已存在，请换一个' });
     }
-    res.status(500).json({ code: 500, message: err.message });
+    sendCaught(res, err);
   }
 });
 
@@ -85,7 +86,7 @@ router.delete('/:id', (req, res) => {
     imageService.deleteCategory(req.params.id);
     res.json({ code: 0, message: '删除成功' });
   } catch (err) {
-    res.status(500).json({ code: 500, message: err.message });
+    sendCaught(res, err);
   }
 });
 

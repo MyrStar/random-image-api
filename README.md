@@ -210,15 +210,18 @@ curl http://your-server:3100/api/wallpaper?w=500
 ```env
 PORT=3100                        # 后续可在系统设置中修改
 ADMIN_USER=admin
-ADMIN_PASS=your_secure_password   # 必须修改！
-JWT_SECRET=your_jwt_secret        # 必须修改！
-ENCRYPT_KEY=0123456789abcdef0123456789abcdef  # 必须修改！32位hex字符串
+ADMIN_PASS=your_secure_password  # 必须修改！默认弱密钥在生产环境会拒绝启动
+JWT_SECRET=your_jwt_secret       # 必须修改！默认弱密钥在生产环境会拒绝启动
+ENCRYPT_KEY=0123456789abcdef0123456789abcdef  # 必须修改！随机字符串即可，建议32位hex
 DB_PATH=./data/images.db
 PUBLIC_URL=http://localhost:3100
 CORS_ORIGINS=*
+TRUST_PROXY=loopback             # 反代信任配置：loopback/跳数/CIDR列表
 ```
 
-> 生成随机密钥：`node -e "console.log(require('crypto').randomBytes(16).toString('hex'))"`
+> 生成随机密钥：`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
+
+> ⚠️ **启动安全校验**：生产环境（`NODE_ENV=production`）下，`ADMIN_PASS`/`JWT_SECRET`/`ENCRYPT_KEY` 仍为默认值时将拒绝启动；开发环境仅打印警告。如确需以默认值启动，可设置 `ALLOW_INSECURE_DEFAULTS=1`（强烈不推荐）。
 
 > ⚠️ `ENCRYPT_KEY` 修改后会导致已有存储源密钥无法解密。如需更换，请先删除所有存储源。
 
@@ -260,12 +263,23 @@ server {
 
 ## 安全注意事项
 
-1. **修改默认密码**：首次部署必须修改 `.env` 中的 `ADMIN_PASS`
+1. **修改默认密码**：首次部署必须修改 `.env` 中的 `ADMIN_PASS`。密码在线修改后以 bcrypt 哈希保存，且所有已登录会话立即失效
 2. **修改 JWT 密钥**：使用随机生成的 64 位 hex 字符串
 3. **修改加密密钥**：使用随机生成的 32 位 hex 字符串
 4. **限制 CORS**：生产环境不要使用 `*`，应指定具体域名
 5. **使用 HTTPS**：生产环境务必配置 SSL 证书
-6. **定期备份**：备份 `data/images.db` 文件即可
+6. **反向代理**：默认 `TRUST_PROXY=loopback` 适合同机 Nginx 部署，限流按真实客户端 IP 生效；CDN 等多级代理请调整为对应跳数或网段
+7. **定期备份**：数据库保存采用"临时文件 + 原子重命名"，并自动维护 `images.db.bak` 备份副本；手动备份请在服务停止时复制，或同时备份 `.bak`
+
+## Docker 部署说明
+
+容器以 `node` 用户（非 root）运行。若使用 bind mount 挂载 `./data`，请确保宿主机目录对 UID 1000 可写：
+
+```bash
+mkdir -p data && sudo chown -R 1000:1000 data
+```
+
+容器内置健康检查（`GET /health`），可通过 `docker ps` 的 STATUS 列查看健康状态。
 
 ---
 
@@ -284,13 +298,13 @@ A: 除数据库路径外，所有配置修改后均立即生效，无需重启�
 A: 这通常是因为修改了 `ENCRYPT_KEY`。需要删除所有存储源，然后重新配置。
 
 ### Q: 上传图片报 413 错误？
-A: 在系统设置中调大「上传大小限制」。
+A: 在系统设置中调大「上传大小限制」，保存后立即生效（无需重启）。
 
 ### Q: 图片访问很慢？
 A: 检查 CORS 配置，确保 `PUBLIC_URL` 设置正确。使用 CDN 加速存储源域名。
 
 ### Q: Docker 容器重启后数据丢失？
-A: 确保挂载了数据卷：`volumes: - ./data:/app/data`
+A: 确保挂载了数据卷：`volumes: - ./data:/app/data`。若容器以非 root 用户运行且无法写入，请执行 `sudo chown -R 1000:1000 data` 修正目录归属。
 
 ### Q: 如何更换加密密钥？
 A:

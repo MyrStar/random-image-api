@@ -3,6 +3,7 @@ const router = express.Router();
 const auth = require('../../middleware/auth');
 const config = require('../../config');
 const crypto = require('crypto');
+const { sendCaught } = require('../../utils/respond');
 
 router.use(auth);
 
@@ -16,19 +17,20 @@ router.get('/', (req, res) => {
     const meta = config.SETTINGS_META;
     res.json({ code: 0, data: { settings, meta } });
   } catch (err) {
-    res.status(500).json({ code: 500, message: err.message });
+    sendCaught(res, err);
   }
 });
 
 /**
  * PUT /admin/api/settings
  * 批量更新系统配置
+ * 先对全部待更新项做校验，全部通过后单事务提交（保证原子性，避免半生效状态）
  */
 router.put('/', (req, res) => {
   try {
     const updates = req.body;
     const meta = config.SETTINGS_META;
-    const changes = [];
+    const validated = {};
     const warnings = [];
 
     for (const [key, value] of Object.entries(updates)) {
@@ -42,7 +44,7 @@ router.put('/', (req, res) => {
 
       // 数值类型验证
       if (meta[key].type === 'number') {
-        const num = parseInt(value);
+        const num = parseInt(value, 10);
         if (isNaN(num)) {
           return res.status(400).json({ code: 400, message: `${meta[key].label} 必须是数字` });
         }
@@ -52,14 +54,12 @@ router.put('/', (req, res) => {
         if (meta[key].max !== undefined && num > meta[key].max) {
           return res.status(400).json({ code: 400, message: `${meta[key].label} 不能大于 ${meta[key].max}` });
         }
-        config.setSetting(key, num);
-        changes.push(key);
+        validated[key] = num;
       } else {
         if (!value || !value.trim()) {
           return res.status(400).json({ code: 400, message: `${meta[key].label} 不能为空` });
         }
-        config.setSetting(key, value.trim());
-        changes.push(key);
+        validated[key] = value.trim();
       }
 
       // 收集警告信息
@@ -71,13 +71,16 @@ router.put('/', (req, res) => {
       }
     }
 
+    // 全部校验通过，单事务提交（无变化时返回空数组）
+    const changes = config.updateSettings(validated);
+
     res.json({
       code: 0,
       message: `已更新 ${changes.length} 项配置`,
       data: { changes, warnings },
     });
   } catch (err) {
-    res.status(500).json({ code: 500, message: err.message });
+    sendCaught(res, err);
   }
 });
 
@@ -94,7 +97,7 @@ router.post('/generate-key', (req, res) => {
         key = crypto.randomBytes(32).toString('hex');
         break;
       case 'encryptKey':
-        key = crypto.randomBytes(16).toString('hex'); // 32字符 = 16字节 for AES-128
+        key = crypto.randomBytes(16).toString('hex'); // 32字符 = 16字节
         break;
       case 'adminPass':
         key = crypto.randomBytes(8).toString('hex');
@@ -104,7 +107,7 @@ router.post('/generate-key', (req, res) => {
     }
     res.json({ code: 0, data: { key } });
   } catch (err) {
-    res.status(500).json({ code: 500, message: err.message });
+    sendCaught(res, err);
   }
 });
 
@@ -143,13 +146,18 @@ router.post('/test', (req, res) => {
       const db = getDb();
       const storages = db.prepare('SELECT id, name, config FROM storage_configs').all();
       let allOk = true;
+      let failedName = '';
       for (const s of storages) {
-        try { JSON.parse(decrypt(s.config)); } catch { allOk = false; break; }
+        try { JSON.parse(decrypt(s.config)); } catch { allOk = false; failedName = s.name; break; }
       }
       if (storages.length === 0) {
         results.push({ item: '存储源密钥', status: 'ok', message: '暂无存储源' });
       } else {
-        results.push({ item: '存储源密钥', status: allOk ? 'ok' : 'fail', message: allOk ? `全部正常（${storages.length}个）` : '部分存储源密钥解密失败' });
+        results.push({
+          item: '存储源密钥',
+          status: allOk ? 'ok' : 'fail',
+          message: allOk ? `全部正常（${storages.length}个）` : `存储源「${failedName}」密钥解密失败，请检查加密密钥是否被修改`,
+        });
       }
     } catch (e) {
       results.push({ item: '存储源密钥', status: 'fail', message: e.message });
@@ -158,7 +166,7 @@ router.post('/test', (req, res) => {
     const allOk = results.every(r => r.status === 'ok');
     res.json({ code: 0, data: { results, allOk } });
   } catch (err) {
-    res.status(500).json({ code: 500, message: err.message });
+    sendCaught(res, err);
   }
 });
 

@@ -79,10 +79,12 @@
         :on-change="onFileChange"
         accept="image/*"
         list-type="picture-card"
+        v-model:file-list="uploadFiles"
       >
         <el-icon :size="40"><Upload /></el-icon>
         <div style="margin-top:8px">拖拽文件到此处，或<em>点击上传</em></div>
       </el-upload>
+      <div class="upload-tip">单文件最大 {{ uploadLimits.maxSizeMB }}MB，单次最多 {{ uploadLimits.maxFiles }} 个文件</div>
       <template #footer>
         <el-button @click="showUpload = false">取消</el-button>
         <el-button type="primary" :loading="uploading" @click="doUpload">开始上传</el-button>
@@ -113,6 +115,21 @@ const previewImg = ref(null)
 const showUpload = ref(false)
 const uploading = ref(false)
 const uploadFiles = ref([])
+
+// 服务端上传限制（系统设置中可改，这里同步用于前端预校验）
+const uploadLimits = ref({ maxSizeMB: 50, maxFiles: 20 })
+
+async function loadUploadLimits() {
+  try {
+    const res = await api.get('/settings')
+    if (res.code === 0) {
+      uploadLimits.value = {
+        maxSizeMB: res.data.settings.uploadMaxSize || 50,
+        maxFiles: res.data.settings.uploadMaxFiles || 20,
+      }
+    }
+  } catch { /* 使用默认值 */ }
+}
 
 async function loadCategories() {
   const res = await api.get('/categories')
@@ -145,9 +162,9 @@ function previewImage(img) {
   previewVisible.value = true
 }
 
-function copyUrl(url) {
-  copyToClipboard(url)
-  ElMessage.success('已复制')
+async function copyUrl(url) {
+  const ok = await copyToClipboard(url)
+  ok ? ElMessage.success('已复制') : ElMessage.error('复制失败，请手动复制')
 }
 
 async function deleteOne(id) {
@@ -177,18 +194,22 @@ async function syncFromStorage() {
 }
 
 async function fixDimensions() {
+  const scoped = !!selectedCategory.value
   await ElMessageBox.confirm(
-    '将下载所有尺寸为 0×0 的图片并解析其宽高信息。\n\n' +
+    '将下载尺寸为 0×0 的图片并解析其宽高信息。\n\n' +
     '💡 什么时候需要用？\n' +
     '• 从存储源同步图片后（同步只获取文件列表，不下载图片内容，所以无法解析尺寸）\n' +
     '• 直接上传的图片不受影响，上传时会自动解析尺寸\n\n' +
-    '⚠️ 此操作会逐张下载图片到服务器内存进行解析，图片较多时可能需要一些时间。',
+    (scoped
+      ? `⚠️ 将只处理当前分类下的图片，图片较多时可能需要一些时间。`
+      : '⚠️ 未选择分类，将处理所有分类下的图片，图片较多时可能需要较长时间。建议先选择分类再修复。'),
     '修复图片尺寸',
     { confirmButtonText: '开始修复', cancelButtonText: '取消', type: 'warning' }
   )
   fixing.value = true
   try {
-    const res = await api.post('/images/fix-dimensions')
+    const payload = scoped ? { category_id: selectedCategory.value } : {}
+    const res = await api.post('/images/fix-dimensions', payload)
     ElMessage.success(res.message || `修复完成：共${res.data.total}张，成功${res.data.fixed}张，失败${res.data.failed}张`)
     loadImages()
   } catch {} finally {
@@ -197,7 +218,17 @@ async function fixDimensions() {
 }
 
 function onFileChange(file) {
-  uploadFiles.value.push(file)
+  // 与服务端限制同步的预校验，不合格的文件直接从列表移除
+  const maxBytes = uploadLimits.value.maxSizeMB * 1024 * 1024
+  if (file.raw && file.raw.size > maxBytes) {
+    uploadFiles.value = uploadFiles.value.filter(f => f.uid !== file.uid)
+    ElMessage.error(`「${file.name}」超过单文件 ${uploadLimits.value.maxSizeMB}MB 限制，已移除`)
+    return
+  }
+  if (uploadFiles.value.length > uploadLimits.value.maxFiles) {
+    uploadFiles.value = uploadFiles.value.filter(f => f.uid !== file.uid)
+    ElMessage.error(`单次最多上传 ${uploadLimits.value.maxFiles} 个文件`)
+  }
 }
 
 async function doUpload() {
@@ -206,9 +237,19 @@ async function doUpload() {
   try {
     const formData = new FormData()
     formData.append('category_id', selectedCategory.value)
-    uploadFiles.value.forEach(f => formData.append('files', f.raw))
+    uploadFiles.value.forEach(f => f.raw && formData.append('files', f.raw))
     const res = await api.post('/images', formData, { headers: { 'Content-Type': 'multipart/form-data' } })
-    ElMessage.success(res.message)
+    // 逐文件结果：失败明细弹窗展示
+    const failed = (res.data || []).filter(r => !r.success)
+    if (failed.length) {
+      ElMessageBox.alert(
+        failed.map(f => `${f.filename}：${f.error}`).join('\n'),
+        `上传结果：${res.message}`,
+        { type: 'warning', customStyle: { whiteSpace: 'pre-line' } }
+      )
+    } else {
+      ElMessage.success(res.message)
+    }
     showUpload.value = false
     uploadFiles.value = []
     loadImages()
@@ -218,7 +259,10 @@ async function doUpload() {
   }
 }
 
-onMounted(loadCategories)
+onMounted(() => {
+  loadCategories()
+  loadUploadLimits()
+})
 </script>
 
 <style scoped>
@@ -247,4 +291,6 @@ onMounted(loadCategories)
 .preview-container { text-align: center; max-height: 70vh; overflow: auto; }
 .preview-img { max-width: 100%; max-height: 65vh; object-fit: contain; }
 .preview-info { margin-top: 16px; }
+
+.upload-tip { font-size: 12px; color: #909399; margin-top: 8px; }
 </style>
