@@ -138,6 +138,10 @@ router.get('/:slug', async (req, res) => {
           return res.status(400).json({ code: 400, message: err.message });
         }
         console.error('[Proxy Error]', err.message);
+        // 缩放请求取图失败时降级为 302 跳原图（存储端防盗链/线路抖动时用户仍能拿到图）
+        if (needResize) {
+          return res.redirect(302, image.url);
+        }
         return res.status(502).json({ code: 502, message: '代理获取图片失败' });
       }
     }

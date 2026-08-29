@@ -6,7 +6,11 @@
  * 2. 请求前做 DNS 解析并校验所有解析结果均非内网地址（IPv4/IPv6 全覆盖）
  * 3. 使用自定义 Agent 的 lookup 钩子在「建连时」再次校验，防止 DNS Rebinding（校验与建连之间换 IP）
  * 4. 手动跟随重定向（最多 maxRedirects 次），每一跳重新做协议/内网校验
- * 5. 总超时（AbortController）+ 响应体大小上限（防止内存耗尽）
+ * 5. 总超时（AbortController + Promise.race 双保险）+ 响应体大小上限（防止内存耗尽）
+ *
+ * 双保险说明：node-fetch v2 在某些场景（如连接尚未建立时 abort）不能可靠地让
+ * Promise 结束，因此外层再套一个 Promise.race 总超时，保证调用方一定能在时限内
+ * 得到结果（成功或明确报错），请求不会无限悬挂。
  */
 
 const fetch = require('node-fetch');
@@ -155,99 +159,137 @@ const httpsAgent = new https.Agent({ lookup: safeLookup, keepAlive: false });
 
 const ALLOWED_PROTOCOLS = ['http:', 'https:'];
 
+function isAbortError(err) {
+  return err && (err.name === 'AbortError' || /aborted/i.test(err.message || ''));
+}
+
 /**
  * SSRF 安全地获取一个 URL 的内容
  * @param {string} urlStr
  * @param {object} [opts]
- * @param {number} [opts.timeoutMs=15000]   总超时（含重定向跳转）
+ * @param {number} [opts.timeoutMs=15000]   单次请求超时（含重定向跳转）
  * @param {number} [opts.maxBytes=104857600] 响应体上限，默认 100MB
  * @param {number} [opts.maxRedirects=5]
+ * @param {boolean} [opts.referer=true]      是否携带本站 Referer（配合存储端 Referer 防盗链）
  * @returns {Promise<{buffer: Buffer, contentType: string|null, status: number, finalUrl: string}>}
  */
 async function safeFetch(urlStr, opts = {}) {
   const timeoutMs = opts.timeoutMs ?? 15000;
   const maxBytes = opts.maxBytes ?? 100 * 1024 * 1024;
   const maxRedirects = opts.maxRedirects ?? 5;
+  const overallMs = timeoutMs + 2000;
 
-  let current = urlStr;
-  for (let hop = 0; hop <= maxRedirects; hop++) {
-    let url;
-    try {
-      url = new URL(current);
-    } catch {
-      throw createBlockError(`无效的URL: ${current}`);
-    }
-    if (!ALLOWED_PROTOCOLS.includes(url.protocol)) {
-      throw createBlockError(`不允许的协议: ${url.protocol}`);
-    }
-    if (url.username || url.password) {
-      throw createBlockError('不允许携带用户凭证的URL');
-    }
-    await assertPublicHost(url.hostname);
+  // 总超时兜底：即使 node-fetch 的 abort 在某些场景失效，调用方也一定能在时限内得到结果
+  return Promise.race([
+    (async () => {
+      let current = urlStr;
+      for (let hop = 0; hop <= maxRedirects; hop++) {
+        let url;
+        try {
+          url = new URL(current);
+        } catch {
+          throw createBlockError(`无效的URL: ${current}`);
+        }
+        if (!ALLOWED_PROTOCOLS.includes(url.protocol)) {
+          throw createBlockError(`不允许的协议: ${url.protocol}`);
+        }
+        if (url.username || url.password) {
+          throw createBlockError('不允许携带用户凭证的URL');
+        }
+        await assertPublicHost(url.hostname);
 
-    // 请求头带上本站 Referer：存储域名开启 Referer 防盗链白名单时，服务器请求才能通过
-    // （本站域名通常在白名单内；不希望发送时传 opts.referer = false）
-    const headers = { 'User-Agent': 'random-image-api/1.0' };
-    if (opts.referer !== false && config.publicUrl) {
-      headers['Referer'] = String(config.publicUrl).replace(/\/+$/, '') + '/';
-    }
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
+        let response;
+        try {
+          // 请求头带上本站 Referer：存储域名开启 Referer 防盗链白名单时，服务器请求才能通过
+          // （本站域名通常在白名单内；不希望发送时传 opts.referer = false）
+          const headers = { 'User-Agent': 'random-image-api/1.0' };
+          if (opts.referer !== false && config.publicUrl) {
+            headers['Referer'] = String(config.publicUrl).replace(/\/+$/, '') + '/';
+          }
+          response = await fetch(url, {
+            redirect: 'manual',
+            signal: controller.signal,
+            agent: url.protocol === 'https:' ? httpsAgent : httpAgent,
+            headers,
+          });
+        } catch (err) {
+          clearTimeout(timer);
+          if (isAbortError(err)) {
+            throw new Error(`请求超时(${timeoutMs}ms)：服务器无法从该地址获取响应（常见原因：存储端防盗链拦截、CDN线路异常、防火墙拦截出站请求）`);
+          }
+          throw err;
+        }
+        clearTimeout(timer);
 
-    const response = await fetch(url, {
-      redirect: 'manual',
-      signal: AbortSignal.timeout(timeoutMs),
-      agent: url.protocol === 'https:' ? httpsAgent : httpAgent,
-      headers,
-    });
+        // 重定向：手动跟随，每一跳重新校验
+        if ([301, 302, 303, 307, 308].includes(response.status)) {
+          const location = response.headers.get('location');
+          response.body?.resume(); // 释放连接
+          if (!location) throw new Error(`重定向缺少 Location (${response.status})`);
+          if (hop === maxRedirects) throw new Error('重定向次数过多');
+          current = new URL(location, url).href;
+          continue;
+        }
 
-    // 重定向：手动跟随，每一跳重新校验
-    if ([301, 302, 303, 307, 308].includes(response.status)) {
-      const location = response.headers.get('location');
-      response.body?.resume(); // 释放连接
-      if (!location) throw new Error(`重定向缺少 Location (${response.status})`);
-      if (hop === maxRedirects) throw new Error('重定向次数过多');
-      current = new URL(location, url).href;
-      continue;
-    }
+        if (!response.ok) {
+          response.body?.resume();
+          throw new Error(`获取失败 HTTP ${response.status}`);
+        }
 
-    if (!response.ok) {
-      response.body?.resume();
-      throw new Error(`获取失败 HTTP ${response.status}`);
-    }
+        // 大小上限：先看 Content-Length，再流式累计兜底
+        const declared = parseInt(response.headers.get('content-length') || '0', 10);
+        if (declared > maxBytes) {
+          response.body?.resume();
+          throw new Error(`响应体超过大小上限 (${Math.round(maxBytes / 1024 / 1024)}MB)`);
+        }
 
-    // 大小上限：先看 Content-Length，再流式累计兜底
-    const declared = parseInt(response.headers.get('content-length') || '0', 10);
-    if (declared > maxBytes) {
-      response.body?.resume();
-      throw new Error(`响应体超过大小上限 (${Math.round(maxBytes / 1024 / 1024)}MB)`);
-    }
-
-    const buffer = await readWithCap(response.body, maxBytes);
-    return {
-      buffer,
-      contentType: response.headers.get('content-type'),
-      status: response.status,
-      finalUrl: url.href,
-    };
-  }
-  throw new Error('重定向次数过多');
+        const buffer = await readWithCap(response.body, maxBytes, timeoutMs);
+        return {
+          buffer,
+          contentType: response.headers.get('content-type'),
+          status: response.status,
+          finalUrl: url.href,
+        };
+      }
+      throw new Error('重定向次数过多');
+    })(),
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(`请求超时: ${overallMs}ms 内未完成访问（目标可能拦截了服务器请求，或网络不通）`)), overallMs);
+    }),
+  ]);
 }
 
-function readWithCap(stream, maxBytes) {
+function readWithCap(stream, maxBytes, timeoutMs) {
   return new Promise((resolve, reject) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
     const chunks = [];
     let total = 0;
+    let settled = false;
+    const done = (fn, arg) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn(arg);
+    };
     stream.on('data', chunk => {
       total += chunk.length;
       if (total > maxBytes) {
         stream.destroy();
-        reject(new Error(`响应体超过大小上限 (${Math.round(maxBytes / 1024 / 1024)}MB)`));
+        done(reject, new Error(`响应体超过大小上限 (${Math.round(maxBytes / 1024 / 1024)}MB)`));
         return;
       }
       chunks.push(chunk);
     });
-    stream.on('end', () => resolve(Buffer.concat(chunks)));
-    stream.on('error', reject);
-    // 停滞的流由 AbortSignal 超时兜底触发 error
+    stream.on('end', () => done(resolve, Buffer.concat(chunks)));
+    stream.on('error', err => done(reject, err));
+    // 停滞的流由外层总超时兜底
+    controller.signal.addEventListener('abort', () => {
+      stream.destroy();
+      done(reject, new Error('读取响应超时'));
+    });
   });
 }
 
