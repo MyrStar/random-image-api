@@ -2,10 +2,18 @@
 # 生成生产环境 .env 配置文件（随机强密钥）
 # 用法: bash setup-env.sh [公开访问地址]
 # 示例: bash setup-env.sh https://img.example.com
+#
+# 不依赖 node，仅用 openssl / /dev/urandom（Linux 服务器自带）
 
 set -euo pipefail
 
 PUBLIC_URL="${1:-http://localhost:3100}"
+# 补全协议头，避免生成 PUBLIC_URL=imgapi.example.com 这种无 scheme 的值
+case "$PUBLIC_URL" in
+  http://*|https://*) ;;
+  *) PUBLIC_URL="https://$PUBLIC_URL" ;;
+esac
+
 ENV_FILE=".env"
 
 if [ -f "$ENV_FILE" ]; then
@@ -13,7 +21,15 @@ if [ -f "$ENV_FILE" ]; then
   exit 1
 fi
 
-rand() { node -e "console.log(require('crypto').randomBytes($1).toString('hex'))"; }
+# 生成 2*bytes 位长度的随机 hex 字符串
+rand() {
+  local bytes="$1"
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -hex "$bytes"
+  else
+    head -c "$bytes" /dev/urandom | od -An -tx1 | tr -d ' \n'
+  fi
+}
 
 ADMIN_USER_VALUE="admin"
 ADMIN_PASS_VALUE="$(rand 12)"
@@ -21,7 +37,7 @@ JWT_SECRET_VALUE="$(rand 32)"
 ENCRYPT_KEY_VALUE="$(rand 16)"
 
 cat > "$ENV_FILE" <<EOF
-# 服务端口（建议保持 3100，由 Nginx 反代对外）
+# 服务端口（Docker 部署保持 3100，与 docker-compose.yml 端口映射一致）
 PORT=3100
 
 # 管理员账号（密码为随机生成值，请查看下方输出并妥善保存！）
