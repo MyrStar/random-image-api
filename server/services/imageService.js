@@ -78,6 +78,18 @@ function normalizeStoragePath(p) {
 }
 
 /**
+ * 归一化访问域名：补全协议头（填 cdn.example.com 视为 https://cdn.example.com）、去尾部斜杠
+ * 否则生成的图片 URL 缺少协议头，浏览器会当作相对路径拼接出错
+ */
+function normalizeEndpoint(ep) {
+  let s = String(ep ?? '').trim().replace(/\/+$/, '');
+  if (s && !/^https?:\/\//i.test(s)) {
+    s = 'https://' + s;
+  }
+  return s || null;
+}
+
+/**
  * 大分类随机取图：利用 (category_id, id) 索引按随机 id 定位，O(log n)
  * 避免每次请求 ORDER BY RANDOM() 全表扫描
  */
@@ -253,14 +265,13 @@ async function syncFromStorage(categoryId) {
   try {
     const adapter = getAdapter(category.storage_id);
 
-    // 已存在的storage_key集合
-    const existing = new Set(
-      db.prepare('SELECT storage_key FROM images WHERE category_id = ?')
-        .all(categoryId)
-        .map(r => r.storage_key)
-    );
+    // 已存在的记录（key -> 行），同步时既用于去重，也用于刷新已有记录的 URL/大小
+    const existingRows = db.prepare('SELECT id, storage_key, url, size, mime_type FROM images WHERE category_id = ?')
+      .all(categoryId);
+    const existing = new Map(existingRows.map(r => [r.storage_key, r]));
 
     let added = 0;
+    let updated = 0;
     let marker = null;
     let hasMore = true;
     let guard = 0;
@@ -270,23 +281,25 @@ async function syncFromStorage(categoryId) {
       const result = await adapter.list(category.storage_path, marker, 1000);
 
       for (const item of result.items) {
-        if (existing.has(item.key)) continue;
         if (!isImage(item.key)) continue;
 
         const filename = path.basename(item.key);
         const url = adapter.getUrl(item.key);
         const mimeType = getMimeType(filename);
+        const old = existing.get(item.key);
 
-        const info = db.prepare(`
-          INSERT OR IGNORE INTO images (category_id, filename, storage_key, url, size, mime_type)
-          VALUES (?, ?, ?, ?, ?, ?)
-        `).run(categoryId, filename, item.key, url, item.size, mimeType);
-
-        // 只在实际插入时计数（唯一索引生效时 changes > 0 表示插入成功）
-        if (info.changes > 0) {
+        if (!old) {
+          const info = db.prepare(`
+            INSERT INTO images (category_id, filename, storage_key, url, size, mime_type)
+            VALUES (?, ?, ?, ?, ?, ?)
+          `).run(categoryId, filename, item.key, url, item.size, mimeType);
+          existing.set(item.key, { id: info.lastInsertRowid, storage_key: item.key, url, size: item.size, mime_type: mimeType });
           added++;
-          // 同步期间新插入的 key 也加入集合，防止分页重叠导致重复
-          existing.add(item.key);
+        } else if (old.url !== url || old.size !== item.size || old.mime_type !== mimeType) {
+          // 域名配置变更/文件被替换后，刷新已有记录（重新同步即自愈）
+          db.prepare('UPDATE images SET url = ?, size = ?, mime_type = ? WHERE id = ?')
+            .run(url, item.size, mimeType, old.id);
+          updated++;
         }
       }
 
@@ -297,7 +310,10 @@ async function syncFromStorage(categoryId) {
     // 清除缓存
     cache.del(CACHE_PREFIX + category.slug);
 
-    return { added, total: existing.size };
+    // 清除该分类图片的"修复尺寸失败"记录，URL 修正后允许重新尝试
+    for (const row of existingRows) dimensionFixFailed.delete(row.id);
+
+    return { added, updated, total: existing.size };
   } finally {
     syncingCategories.delete(categoryId);
   }
@@ -392,7 +408,7 @@ function createStorage(data) {
     INSERT INTO storage_configs (name, type, config, endpoint, status)
     VALUES (?, ?, ?, ?, ?)
   `);
-  const info = stmt.run(data.name, data.type, encrypt(JSON.stringify(data.config)), data.endpoint, data.status ?? 1);
+  const info = stmt.run(data.name, data.type, encrypt(JSON.stringify(data.config)), normalizeEndpoint(data.endpoint), data.status ?? 1);
   return { id: info.lastInsertRowid, ...data };
 }
 
@@ -413,7 +429,7 @@ function updateStorage(id, data) {
     fields.push('config = ?');
     values.push(encrypt(JSON.stringify(mergedConfig)));
   }
-  if (data.endpoint !== undefined) { fields.push('endpoint = ?'); values.push(data.endpoint); }
+  if (data.endpoint !== undefined) { fields.push('endpoint = ?'); values.push(normalizeEndpoint(data.endpoint)); }
   if (data.status !== undefined) { fields.push('status = ?'); values.push(data.status); }
   fields.push("updated_at = datetime('now','localtime')");
   values.push(id);

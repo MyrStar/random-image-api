@@ -4,8 +4,13 @@
  */
 class StorageAdapter {
   constructor(config, endpoint) {
+    // 归一化访问域名：补全协议头（填 cdn.example.com 视为 https://cdn.example.com）、去尾部斜杠
+    let ep = String(endpoint || '').trim().replace(/\/+$/, '');
+    if (ep && !/^https?:\/\//i.test(ep)) {
+      ep = 'https://' + ep;
+    }
+    this.endpoint = ep;
     this.config = config;
-    this.endpoint = (endpoint || '').replace(/\/$/, '');
   }
 
   /**
