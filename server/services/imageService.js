@@ -572,6 +572,37 @@ function deleteCategory(id) {
 }
 
 /**
+ * 七牛 imageView2 缩放 URL：让 CDN 直接返回缩放结果，服务器无需取图
+ * mode 映射：fit -> /2（限定宽高缩放），fill -> /3（限定宽高居中裁剪）；
+ * stretch 七牛无对应模式，降级为 fit
+ */
+function buildQiniuImageView2(url, w, h, mode) {
+  const modeCode = mode === 'fill' ? 3 : 2;
+  let param = `imageView2/${modeCode}`;
+  if (w) param += `/w/${w}`;
+  if (h) param += `/h/${h}`;
+  const sep = url.includes('?') ? '&' : '?';
+  return `${url}${sep}${param}`;
+}
+
+/**
+ * 若当前分类的存储支持「CDN 端缩放」，返回缩放后的 URL；不支持返回 null（走服务端 sharp）
+ * 目前七牛支持（imageView2）；其他存储走服务端处理
+ */
+function getProcessedResizeUrl(slug, w, h, mode) {
+  const cat = db.prepare(`
+    SELECT s.type AS storage_type
+    FROM categories c JOIN storage_configs s ON c.storage_id = s.id
+    WHERE c.slug = ? AND c.status = 1 AND s.status = 1
+  `).get(slug);
+  if (!cat || cat.storage_type !== 'qiniu') return null;
+
+  const image = getRandomImage(slug);
+  if (!image || !image.url) return null;
+  return buildQiniuImageView2(image.url, w, h, mode);
+}
+
+/**
  * 获取仪表盘统计数据
  */
 function getStats() {
@@ -607,6 +638,7 @@ module.exports = {
   deleteImages,
   syncFromStorage,
   setImageDimensions,
+  getProcessedResizeUrl,
   getImages,
   getStorages,
   getStorageById,

@@ -81,6 +81,15 @@ router.get('/:slug', async (req, res) => {
     const mode = RESIZE_MODES.includes(req.query.mode) ? req.query.mode : 'fit';
     const needResize = targetW !== null || targetH !== null;
 
+    // 优先使用存储端处理（如七牛 imageView2）：CDN 直接返回缩放结果，服务器零取图
+    if (needResize) {
+      const processed = imageService.getProcessedResizeUrl(slug, targetW, targetH, mode);
+      if (processed) {
+        res.set('Cache-Control', 'public, max-age=86400');
+        return res.redirect(302, processed);
+      }
+    }
+
     // 代理模式
     if (type === 'raw' || needResize) {
       try {
