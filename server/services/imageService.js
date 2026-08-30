@@ -7,6 +7,7 @@ const { decrypt } = require('../utils/crypto');
 const { encrypt } = require('../utils/crypto');
 const { getMimeType, isImage, getImageDimensions } = require('../utils/imageInfo');
 const { safeFetch } = require('../utils/safeFetch');
+const { normalizeEndpoint } = require('../utils/endpoint');
 const { nanoid } = require('../utils/nanoid');
 
 const CACHE_PREFIX = 'images:';
@@ -87,18 +88,6 @@ function normalizeStoragePath(p) {
   s = s.replace(/^\/+/, '');
   if (!s.endsWith('/')) s += '/';
   return s;
-}
-
-/**
- * 归一化访问域名：补全协议头（填 cdn.example.com 视为 https://cdn.example.com）、去尾部斜杠
- * 否则生成的图片 URL 缺少协议头，浏览器会当作相对路径拼接出错
- */
-function normalizeEndpoint(ep) {
-  let s = String(ep ?? '').trim().replace(/\/+$/, '');
-  if (s && !/^https?:\/\//i.test(s)) {
-    s = 'https://' + s;
-  }
-  return s || null;
 }
 
 /**

@@ -293,4 +293,4 @@ function readWithCap(stream, maxBytes, timeoutMs) {
   });
 }
 
-module.exports = { safeFetch, isPrivateIp, assertPublicHost };
+module.exports = { safeFetch };

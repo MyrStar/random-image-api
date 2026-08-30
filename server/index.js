@@ -95,7 +95,7 @@ async function main() {
   const publicLimitMap = new Map();
   const RATE_WINDOW = 60 * 1000; // 1分钟
 
-  function makeRateLimiter(map, getLimit, name) {
+  function makeRateLimiter(map, getLimit) {
     return (req, res, next) => {
       const key = req.ip;
       const now = Date.now();
@@ -113,8 +113,8 @@ async function main() {
       next();
     };
   }
-  app.use('/admin/api/login', makeRateLimiter(loginLimitMap, () => config.rateLimitLogin, 'login'));
-  app.use('/api/', makeRateLimiter(publicLimitMap, () => config.rateLimitPublic, 'public'));
+  app.use('/admin/api/login', makeRateLimiter(loginLimitMap, () => config.rateLimitLogin));
+  app.use('/api/', makeRateLimiter(publicLimitMap, () => config.rateLimitPublic));
 
   // 定期清理过期的频率限制记录
   const rateLimitCleanupTimer = setInterval(() => {
@@ -145,6 +145,12 @@ async function main() {
 
   // API路由
   app.use(routes);
+
+  // 未匹配到的 /admin/api/* 一律返回 404 JSON：
+  // 不能落入下面的 SPA fallback，否则 API 客户端会收到 index.html(200) 造成调试困惑
+  app.use('/admin/api', (req, res) => {
+    res.status(404).json({ code: 404, message: '接口不存在' });
+  });
 
   // 前端SPA fallback - /admin下的非API请求都返回index.html
   app.get('/admin/*', (req, res) => {

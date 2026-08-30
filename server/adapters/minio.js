@@ -93,7 +93,6 @@ class MinIOAdapter extends StorageAdapter {
         items.push({
           key: obj.name,
           size: obj.size,
-          lastModified: obj.lastModified,
         });
         count++;
       });

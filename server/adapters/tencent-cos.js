@@ -23,14 +23,9 @@ class TencentCOSAdapter extends StorageAdapter {
     });
   }
 
-  _getBucket() {
-    // bucket 格式: bucketname-appid
-    return this.bucket;
-  }
-
   async upload(key, buffer, mimeType) {
     const params = {
-      Bucket: this._getBucket(),
+      Bucket: this.bucket,
       Key: key,
       Body: buffer,
     };
@@ -43,7 +38,7 @@ class TencentCOSAdapter extends StorageAdapter {
   async delete(key) {
     try {
       await this.client.send(new DeleteObjectCommand({
-        Bucket: this._getBucket(),
+        Bucket: this.bucket,
         Key: key,
       }));
     } catch (err) {
@@ -58,12 +53,12 @@ class TencentCOSAdapter extends StorageAdapter {
       return `${this.endpoint}/${key}`;
     }
     // 使用默认域名: https://{bucket}.cos.{region}.myqcloud.com/{key}
-    return `https://${this._getBucket()}.cos.${this.region}.myqcloud.com/${key}`;
+    return `https://${this.bucket}.cos.${this.region}.myqcloud.com/${key}`;
   }
 
   async list(prefix, marker = null, limit = 1000) {
     const params = {
-      Bucket: this._getBucket(),
+      Bucket: this.bucket,
       Prefix: prefix || undefined,
       MaxKeys: limit,
     };

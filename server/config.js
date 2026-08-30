@@ -78,6 +78,8 @@ function persistSetting(db, key, value) {
     upsertRow(db, 'adminPassHash', _adminPassHash);
     // 清理旧版本可能遗留的明文密码
     db.prepare('DELETE FROM system_settings WHERE key = ?').run('adminPass');
+    // 哈希已生成，明文不再需要（校验统一走 bcrypt），从内存清除
+    delete _config.adminPass;
     return;
   }
   upsertRow(db, key, value);
@@ -136,6 +138,8 @@ function loadFromDatabase() {
     if (!_adminPassHash) {
       _adminPassHash = bcrypt.hashSync(String(_config.adminPass), 10);
     }
+    // 哈希已生成，明文不再需要（校验统一走 bcrypt），从内存清除
+    delete _config.adminPass;
 
     _dbReady = true;
   } catch (e) {
@@ -144,6 +148,7 @@ function loadFromDatabase() {
     if (!_adminPassHash) {
       _adminPassHash = bcrypt.hashSync(String(_config.adminPass), 10);
     }
+    delete _config.adminPass;
   }
 }
 
@@ -304,14 +309,7 @@ function getAllSettings() {
 }
 
 /**
- * 获取原始配置值（内部使用，不脱敏）
- */
-function getRaw(key) {
-  return _config[key];
-}
-
-/**
- * 脱敏显示：仅显示前2后2位
+ * 获取所有可配置项（脱敏后的）
  */
 function maskSecret(val) {
   if (!val || val.length <= 4) return '****';
@@ -322,7 +320,7 @@ function maskSecret(val) {
 module.exports = {
   // 兼容属性访问
   get port() { return _config.port; },
-  get admin() { return { user: _config.adminUser, pass: _config.adminPass }; },
+  get admin() { return { user: _config.adminUser }; },
   get jwt() { return { secret: _config.jwtSecret, expiresIn: '7d' }; },
   get encryptKey() { return _config.encryptKey; },
   get dbPath() { return _config.dbPath; },
@@ -343,7 +341,6 @@ module.exports = {
   setSetting,
   updateSettings,
   getAllSettings,
-  getRaw,
   maskSecret,
   onHotReload,
   verifyAdminPassword,
@@ -359,7 +356,7 @@ module.exports = {
     corsOrigins: { label: 'CORS 允许来源', type: 'text', group: 'basic', restart: false, placeholder: '逗号分隔，* 表示全部允许' },
     dbPath: { label: '数据库路径', type: 'text', group: 'advanced', restart: true, readonly: true },
     uploadMaxSize: { label: '上传大小限制 (MB)', type: 'number', group: 'upload', min: 1, max: 200, restart: false },
-    uploadMaxFiles: { label: '单次上传文件数上限', type: 'number', group: 'upload', min: 1, max: 100, restart: false },
+    uploadMaxFiles: { label: '单次上传文件数上限', type: 'number', group: 'upload', min: 1, max: 20, restart: false },
     resizeMaxDimension: { label: '图片缩放最大尺寸 (px)', type: 'number', group: 'upload', min: 100, max: 16384, restart: false },
     cacheMaxSize: { label: '缓存最大条目数', type: 'number', group: 'advanced', min: 10, max: 10000, restart: false },
     autoSaveInterval: { label: '自动保存间隔 (秒)', type: 'number', group: 'advanced', min: 5, max: 300, restart: false, hotReload: true },

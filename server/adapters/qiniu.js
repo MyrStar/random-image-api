@@ -20,7 +20,12 @@ class QiniuAdapter extends StorageAdapter {
         'na0': qiniu.zone.Zone_na0,
         'as0': qiniu.zone.Zone_as0,
       };
-      cfg.zone = regionMap[this.config.region] || qiniu.zone.Zone_z0;
+      const zone = regionMap[this.config.region];
+      // 无效 region 静默回退会让海外空间打到错误区域的 API 上、报难以定位的鉴权/网络错误，必须显式报错
+      if (!zone) {
+        throw new Error(`不支持的区域(Region): ${this.config.region}，可选值：z0/z1/z2/na0/as0`);
+      }
+      cfg.zone = zone;
     }
     return cfg;
   }
@@ -62,12 +67,7 @@ class QiniuAdapter extends StorageAdapter {
 
   getUrl(key) {
     if (this.endpoint) {
-      // 确保使用HTTPS
-      let url = this.endpoint;
-      if (url.startsWith('http://')) {
-        url = url.replace('http://', 'https://');
-      }
-      return `${url}/${key}`;
+      return `${this.endpoint}/${key}`;
     }
     // 如果没有配置endpoint，使用七牛默认CDN域名（https）
     // 注意：qiniudn.com 是旧域名，建议在控制台绑定自定义域名并配置 endpoint
@@ -88,8 +88,6 @@ class QiniuAdapter extends StorageAdapter {
         const items = (body.items || []).map(item => ({
           key: item.key,
           size: item.fsize,
-          mimeType: item.mimeType,
-          putTime: item.putTime,
         }));
         resolve({
           items,

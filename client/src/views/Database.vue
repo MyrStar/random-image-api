@@ -137,7 +137,9 @@ async function handleDelete(row) {
     images: '将同时删除存储源中的对应文件',
   }
   const extra = tips[activeTable.value] ? `\n\n注意：${tips[activeTable.value]}` : ''
-  await ElMessageBox.confirm(`确定删除 ${activeTable.value} 表中 ID=${row.id} 的记录？${extra}`, '确认')
+  try {
+    await ElMessageBox.confirm(`确定删除 ${activeTable.value} 表中 ID=${row.id} 的记录？${extra}`, '确认')
+  } catch { return }
   await api.delete(`/db/${activeTable.value}/${row.id}`)
   ElMessage.success('删除成功')
   loadData()

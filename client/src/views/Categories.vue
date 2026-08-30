@@ -113,7 +113,7 @@ function openDialog(row) {
 }
 
 async function handleSave() {
-  await formRef.value.validate()
+  try { await formRef.value.validate() } catch { return }
   saving.value = true
   try {
     if (editingId.value) {
@@ -131,7 +131,7 @@ async function handleSave() {
 }
 
 async function handleDelete(id) {
-  await ElMessageBox.confirm('删除分类会同时删除该分类下的所有图片记录，确定？', '确认')
+  try { await ElMessageBox.confirm('删除分类会同时删除该分类下的所有图片记录，确定？', '确认') } catch { return }
   await api.delete(`/categories/${id}`)
   ElMessage.success('删除成功')
   load()

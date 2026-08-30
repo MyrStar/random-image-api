@@ -181,7 +181,8 @@ async function initDatabase() {
   // 迁移：对已有 AUTOINCREMENT 的表重建（SQLite 不支持 ALTER TABLE DROP AUTOINCREMENT）
   _migrateRemoveAutoincrement(_db);
 
-  // 迁移：为 (category_id, storage_key) 建唯一约束（配合 INSERT OR IGNORE 防止重复同步）
+  // 迁移：为 (category_id, storage_key) 建唯一约束（防御性兜底；正常防重由业务层的
+  // 同步锁与 existing 检查保证，此索引防止极端情况下重复入库）
   _migrateUniqueStorageKey(_db);
 
   // 迁移：storage_configs 增加 origin_domain（源站域名，服务端取图直连源站、绕过外部CDN）

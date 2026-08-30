@@ -34,9 +34,10 @@
           <el-input v-model="form.name" placeholder="如：七牛云主存储" />
         </el-form-item>
         <el-form-item label="存储类型" prop="type">
-          <el-select v-model="form.type" style="width:100%">
+          <el-select v-model="form.type" style="width:100%" :disabled="!!editingId">
             <el-option v-for="t in supportedTypes" :key="t.type" :label="t.name" :value="t.type" />
           </el-select>
+          <div v-if="editingId" class="form-tip">编辑时不可更改存储类型（类型变更需要重新填写全部密钥，请新建存储源）</div>
         </el-form-item>
         <!-- 七牛云配置 -->
         <template v-if="form.type === 'qiniu'">
@@ -262,7 +263,7 @@ async function openDialog(row) {
 }
 
 async function handleSave() {
-  await formRef.value.validate()
+  try { await formRef.value.validate() } catch { return }
   saving.value = true
   try {
     const data = { ...form }
@@ -290,7 +291,7 @@ async function testConn(id) {
 }
 
 async function handleDelete(id) {
-  await ElMessageBox.confirm('确定删除该存储源？', '确认')
+  try { await ElMessageBox.confirm('确定删除该存储源？', '确认') } catch { return }
   await api.delete(`/storages/${id}`)
   ElMessage.success('删除成功')
   load()

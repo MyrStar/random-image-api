@@ -74,12 +74,11 @@ class CloudflareR2Adapter extends StorageAdapter {
     const items = (result.Contents || []).map(item => ({
       key: item.Key,
       size: item.Size,
-      lastModified: item.LastModified,
     }));
 
     return {
       items,
-      nextMarker: result.IsTruncated ? (result.NextContinuationToken || items[items.length - 1]?.key) : null,
+      nextMarker: result.IsTruncated ? (result.NextContinuationToken || null) : null,
     };
   }
 

@@ -169,14 +169,14 @@ async function copyUrl(url) {
 }
 
 async function deleteOne(id) {
-  await ElMessageBox.confirm('确定删除这张图片？', '确认')
+  try { await ElMessageBox.confirm('确定删除这张图片？', '确认') } catch { return }
   await api.delete(`/images/${id}`)
   ElMessage.success('删除成功')
   loadImages()
 }
 
 async function batchDelete() {
-  await ElMessageBox.confirm(`确定删除选中的 ${selectedIds.value.length} 张图片？`, '确认')
+  try { await ElMessageBox.confirm(`确定删除选中的 ${selectedIds.value.length} 张图片？`, '确认') } catch { return }
   const res = await api.post('/images/batch-delete', { ids: selectedIds.value })
   ElMessage.success(res.message)
   loadImages()
@@ -196,17 +196,19 @@ async function syncFromStorage() {
 
 async function fixDimensions() {
   const scoped = !!selectedCategory.value
-  await ElMessageBox.confirm(
-    '将下载尺寸为 0×0 的图片并解析其宽高信息。\n\n' +
-    '💡 什么时候需要用？\n' +
-    '• 从存储源同步图片后（同步只获取文件列表，不下载图片内容，所以无法解析尺寸）\n' +
-    '• 直接上传的图片不受影响，上传时会自动解析尺寸\n\n' +
-    (scoped
-      ? `⚠️ 将只处理当前分类下的图片，图片较多时可能需要一些时间。`
-      : '⚠️ 未选择分类，将处理所有分类下的图片，图片较多时可能需要较长时间。建议先选择分类再修复。'),
-    '修复图片尺寸',
-    { confirmButtonText: '开始修复', cancelButtonText: '取消', type: 'warning' }
-  )
+  try {
+    await ElMessageBox.confirm(
+      '将下载尺寸为 0×0 的图片并解析其宽高信息。\n\n' +
+      '💡 什么时候需要用？\n' +
+      '• 从存储源同步图片后（同步只获取文件列表，不下载图片内容，所以无法解析尺寸）\n' +
+      '• 直接上传的图片不受影响，上传时会自动解析尺寸\n\n' +
+      (scoped
+        ? `⚠️ 将只处理当前分类下的图片，图片较多时可能需要一些时间。`
+        : '⚠️ 未选择分类，将处理所有分类下的图片，图片较多时可能需要较长时间。建议先选择分类再修复。'),
+      '修复图片尺寸',
+      { confirmButtonText: '开始修复', cancelButtonText: '取消', type: 'warning' }
+    )
+  } catch { return }
   fixing.value = true
   try {
     const payload = scoped ? { category_id: selectedCategory.value } : {}

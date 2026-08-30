@@ -4,13 +4,13 @@ const StorageAdapter = require('./base');
 class AliyunOSSAdapter extends StorageAdapter {
   constructor(config, endpoint) {
     super(config, endpoint);
+    // API 操作（上传/列表/删除）始终走官方区域端点：
+    // 访问域名通常是 CDN 域名，不转发 OSS 签名 API 请求，cname 模式会导致同步/上传全部失败
     this.client = new OSS({
       accessKeyId: config.accessKeyId,
       accessKeySecret: config.accessKeySecret,
       bucket: config.bucket,
       region: config.region || 'oss-cn-hangzhou',
-      // 如果有自定义域名，使用cname模式
-      ...(endpoint ? { cname: true, endpoint } : {}),
     });
   }
 
@@ -48,8 +48,6 @@ class AliyunOSSAdapter extends StorageAdapter {
     const items = (result.objects || []).map(item => ({
       key: item.name,
       size: item.size,
-      mimeType: item.type,
-      lastModified: item.lastModified,
     }));
 
     return {

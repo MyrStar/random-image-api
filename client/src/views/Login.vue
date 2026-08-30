@@ -35,7 +35,7 @@ const rules = {
 }
 
 async function handleLogin() {
-  await formRef.value.validate()
+  try { await formRef.value.validate() } catch { return }
   loading.value = true
   try {
     const res = await api.post('/login', form.value)

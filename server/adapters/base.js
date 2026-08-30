@@ -2,14 +2,11 @@
  * 存储适配器基类
  * 所有存储适配器必须继承此类并实现抽象方法
  */
+const { normalizeEndpoint } = require('../utils/endpoint');
+
 class StorageAdapter {
   constructor(config, endpoint) {
-    // 归一化访问域名：补全协议头（填 cdn.example.com 视为 https://cdn.example.com）、去尾部斜杠
-    let ep = String(endpoint || '').trim().replace(/\/+$/, '');
-    if (ep && !/^https?:\/\//i.test(ep)) {
-      ep = 'https://' + ep;
-    }
-    this.endpoint = ep;
+    this.endpoint = normalizeEndpoint(endpoint);
     this.config = config;
   }
 
