@@ -3,11 +3,6 @@ services:
     build: .
     container_name: random-image-api
     restart: unless-stopped
-    # 指定公共 DNS：容器默认可能回退到公共解析器，拿到 CDN 异常线路的节点
-    # （服务器访问存储域名超时时，优先检查这里）
-    dns:
-      - 223.5.5.5
-      - 119.29.29.29
     ports:
       - "3100:3100"
     volumes:
@@ -21,11 +16,8 @@ services:
         max-size: "10m"
         max-file: "3"
 
-# 网桥 MTU：部分 VPS（尤其隧道/叠加网线路）实际路径 MTU 小于 1500，容器按 1500 发包
-# 会导致 TCP 能连但 TLS 握手挂起（取图超时的典型症状）。若取图超时：
-# 宿主机 `ping -M do -s 1372 <存储域名解析IP>` 探测路径 MTU 后调整此值（= 探测字节数 + 28）
-networks:
-  default:
-    driver: bridge
-    driver_opts:
-      com.docker.network.driver.mtu: 1400
+# 说明：不要给容器钉公共 DNS 或手动调低 MTU。
+# - 七牛按解析者位置调度 CDN 节点，公共 DNS 与宿主机解析结果可能不同；
+# - 宿主机物理 MTU 1500 正常时，手动设小 MTU 反而会造成大包黑洞
+#   （TCP 握手通、图片等大响应挂起，正是 2026-08-30 线上取图超时的根因）。
+# 若服务器取图超时，先用宿主机 curl 直测源站 URL 分流网络问题，再查应用。

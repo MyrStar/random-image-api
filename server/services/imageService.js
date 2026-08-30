@@ -362,7 +362,7 @@ async function syncFromStorage(categoryId) {
  */
 async function fixDimensions(categoryId = null) {
   let sql = `
-    SELECT i.*, s.endpoint AS storage_endpoint, s.origin_domain AS storage_origin
+    SELECT i.*, s.endpoint, s.origin_domain
     FROM images i
     JOIN categories c ON i.category_id = c.id
     LEFT JOIN storage_configs s ON c.storage_id = s.id
