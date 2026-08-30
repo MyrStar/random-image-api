@@ -164,6 +164,11 @@
         </template>
         <el-form-item label="访问域名" prop="endpoint">
           <el-input v-model="form.endpoint" placeholder="如 https://cdn.example.com" />
+          <div class="form-tip">生成公开图片 URL 用的域名（可以套外部 CDN）</div>
+        </el-form-item>
+        <el-form-item label="源站域名">
+          <el-input v-model="form.origin_domain" placeholder="可选，如 https://cdn2.example.com" />
+          <div class="form-tip">访问域名套了外部 CDN 时填写回源的存储域名：服务端取图（缩放/修复尺寸）直连源站，不受外部 CDN 稳定性影响；用户访问仍走外部 CDN</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -200,6 +205,7 @@ const form = reactive({
   type: 'qiniu',
   config: configDefaults.qiniu(),
   endpoint: '',
+  origin_domain: '',
 })
 
 // 切换存储类型时重置配置
@@ -236,16 +242,20 @@ async function openDialog(row) {
     // 列表接口不返回 config，若用空对象回填，保存时会把已保存的密钥覆盖为空
     const factory = configDefaults[row.type] || configDefaults.qiniu
     let savedConfig = {}
+    let savedOrigin = row.origin_domain
     try {
       const res = await api.get(`/storages/${row.id}`)
       if (res.code === 0 && res.data?.config) savedConfig = res.data.config
+      if (res.code === 0) savedOrigin = res.data?.origin_domain ?? savedOrigin
     } catch { /* 拉取失败时仍允许编辑非敏感字段，服务端会跳过空敏感字段 */ }
     form.config = { ...factory(), ...savedConfig }
+    form.origin_domain = savedOrigin || ''
   } else {
     editingId.value = null
     form.name = ''
     form.type = 'qiniu'
     form.endpoint = ''
+    form.origin_domain = ''
     form.config = configDefaults.qiniu()
   }
   dialogVisible.value = true

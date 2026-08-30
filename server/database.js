@@ -142,6 +142,7 @@ async function initDatabase() {
       type        TEXT NOT NULL,
       config      TEXT NOT NULL,
       endpoint    TEXT,
+      origin_domain TEXT,
       status      INTEGER DEFAULT 1,
       created_at  DATETIME DEFAULT (datetime('now','localtime')),
       updated_at  DATETIME DEFAULT (datetime('now','localtime'))
@@ -182,6 +183,9 @@ async function initDatabase() {
 
   // 迁移：为 (category_id, storage_key) 建唯一约束（配合 INSERT OR IGNORE 防止重复同步）
   _migrateUniqueStorageKey(_db);
+
+  // 迁移：storage_configs 增加 origin_domain（源站域名，服务端取图直连源站、绕过外部CDN）
+  _migrateAddOriginDomain(_db);
 
   // 索引：大分类随机取图用（按 id 范围定位）
   _db.exec('CREATE INDEX IF NOT EXISTS idx_images_cat_id ON images(category_id, id)');
@@ -305,6 +309,21 @@ function _migrateUniqueStorageKey(db) {
     console.log('[DB Migration] 已创建 images(category_id, storage_key) 唯一索引');
   } catch (err) {
     console.error('[DB Migration] 创建唯一索引失败（非致命，将继续启动）:', err.message);
+  }
+}
+
+/**
+ * 迁移：storage_configs 增加 origin_domain 列（源站域名）
+ * 用途：外部 CDN 回源七牛时，服务端取图（缩放/修复尺寸/代理）直连源站域名，绕过外部 CDN
+ */
+function _migrateAddOriginDomain(db) {
+  try {
+    const cols = db.prepare('PRAGMA table_info("storage_configs")').all();
+    if (cols.some(c => c.name === 'origin_domain')) return;
+    db.exec('ALTER TABLE storage_configs ADD COLUMN origin_domain TEXT');
+    console.log('[DB Migration] storage_configs 已添加 origin_domain 列');
+  } catch (err) {
+    console.error('[DB Migration] 添加 origin_domain 失败（非致命，将继续启动）:', err.message);
   }
 }
 

@@ -85,11 +85,11 @@ function trimConfig(config) {
  */
 router.post('/', (req, res) => {
   try {
-    const { name, type, config, endpoint, status } = req.body;
+    const { name, type, config, endpoint, origin_domain, status } = req.body;
     if (!name || !type || !config) {
       return res.status(400).json({ code: 400, message: '缺少必填字段' });
     }
-    const storage = imageService.createStorage({ name: name.trim(), type, config: trimConfig(config), endpoint: endpoint?.trim(), status });
+    const storage = imageService.createStorage({ name: name.trim(), type, config: trimConfig(config), endpoint: endpoint?.trim(), origin_domain: origin_domain?.trim(), status });
     res.json({ code: 0, data: storage, message: '添加成功' });
   } catch (err) {
     sendCaught(res, err);

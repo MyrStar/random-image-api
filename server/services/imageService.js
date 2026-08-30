@@ -102,6 +102,31 @@ function normalizeEndpoint(ep) {
 }
 
 /**
+ * 查询分类对应存储的源站域名信息（服务端取图用）
+ * 配了外部 CDN 回源时：公开 URL 用「访问域名」，服务端取图改走「源站域名」
+ */
+function getProxyFetchInfo(slug) {
+  const row = db.prepare(`
+    SELECT s.endpoint, s.origin_domain
+    FROM categories c JOIN storage_configs s ON c.storage_id = s.id
+    WHERE c.slug = ? AND c.status = 1
+  `).get(slug);
+  if (!row || !row.origin_domain) return null;
+  return { endpoint: row.endpoint, origin_domain: row.origin_domain };
+}
+
+/** 若 URL 属于该存储的访问域名且配了源站域名，改写为源站 URL；否则原样返回 */
+function rewriteUrlToOrigin(url, storage) {
+  if (!storage || !url) return url;
+  const endpoint = normalizeEndpoint(storage.endpoint);
+  const origin = normalizeEndpoint(storage.origin_domain);
+  if (origin && endpoint && url.startsWith(endpoint)) {
+    return origin + url.slice(endpoint.length);
+  }
+  return url;
+}
+
+/**
  * 大分类随机取图：利用 (category_id, id) 索引按随机 id 定位，O(log n)
  * 避免每次请求 ORDER BY RANDOM() 全表扫描
  */
@@ -336,10 +361,15 @@ async function syncFromStorage(categoryId) {
  * @param {number|null} categoryId - 仅处理指定分类（null 为全库）
  */
 async function fixDimensions(categoryId = null) {
-  let sql = 'SELECT * FROM images WHERE width = 0 AND height = 0';
+  let sql = `
+    SELECT i.*, s.endpoint AS storage_endpoint, s.origin_domain AS storage_origin
+    FROM images i
+    JOIN categories c ON i.category_id = c.id
+    LEFT JOIN storage_configs s ON c.storage_id = s.id
+    WHERE i.width = 0 AND i.height = 0`;
   const params = [];
   if (categoryId) {
-    sql += ' AND category_id = ?';
+    sql += ' AND i.category_id = ?';
     params.push(categoryId);
   }
   const images = db.prepare(sql).all(...params).filter(img => !dimensionFixFailed.has(img.id));
@@ -352,7 +382,7 @@ async function fixDimensions(categoryId = null) {
     while (cursor < images.length) {
       const img = images[cursor++];
       try {
-        const resp = await safeFetch(img.url, { timeoutMs: 30000, maxBytes: FIX_DIMENSIONS_MAX_BYTES });
+        const resp = await safeFetch(rewriteUrlToOrigin(img.url, img), { timeoutMs: 30000, maxBytes: FIX_DIMENSIONS_MAX_BYTES });
         const { width, height } = getImageDimensions(resp.buffer);
         if (width > 0 || height > 0) {
           db.prepare('UPDATE images SET width = ?, height = ? WHERE id = ?').run(width, height, img.id);
@@ -441,10 +471,10 @@ function getStorageById(id) {
 
 function createStorage(data) {
   const stmt = db.prepare(`
-    INSERT INTO storage_configs (name, type, config, endpoint, status)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT INTO storage_configs (name, type, config, endpoint, origin_domain, status)
+    VALUES (?, ?, ?, ?, ?, ?)
   `);
-  const info = stmt.run(data.name, data.type, encrypt(JSON.stringify(data.config)), normalizeEndpoint(data.endpoint), data.status ?? 1);
+  const info = stmt.run(data.name, data.type, encrypt(JSON.stringify(data.config)), normalizeEndpoint(data.endpoint), normalizeEndpoint(data.origin_domain), data.status ?? 1);
   return { id: info.lastInsertRowid, ...data };
 }
 
@@ -466,6 +496,7 @@ function updateStorage(id, data) {
     values.push(encrypt(JSON.stringify(mergedConfig)));
   }
   if (data.endpoint !== undefined) { fields.push('endpoint = ?'); values.push(normalizeEndpoint(data.endpoint)); }
+  if (data.origin_domain !== undefined) { fields.push('origin_domain = ?'); values.push(normalizeEndpoint(data.origin_domain)); }
   if (data.status !== undefined) { fields.push('status = ?'); values.push(data.status); }
   fields.push("updated_at = datetime('now','localtime')");
   values.push(id);
@@ -639,6 +670,8 @@ module.exports = {
   syncFromStorage,
   setImageDimensions,
   getProcessedResizeUrl,
+  getProxyFetchInfo,
+  rewriteUrlToOrigin,
   getImages,
   getStorages,
   getStorageById,

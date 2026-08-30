@@ -94,8 +94,10 @@ router.get('/:slug', async (req, res) => {
     // 代理模式
     if (type === 'raw' || needResize) {
       try {
+        // 配了源站域名时，服务端取图直连源站（绕过外部 CDN）；未配置则按原 URL 取
+        const fetchUrl = imageService.rewriteUrlToOrigin(image.url, imageService.getProxyFetchInfo(slug));
         // safeFetch 内部完成协议/内网地址/重定向/超时/大小校验
-        const { buffer } = await safeFetch(image.url, {
+        const { buffer } = await safeFetch(fetchUrl, {
           timeoutMs: PROXY_TIMEOUT_MS,
           maxBytes: PROXY_MAX_BYTES,
         });

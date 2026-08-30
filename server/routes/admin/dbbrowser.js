@@ -14,7 +14,7 @@ const ALLOWED_TABLES = ['storage_configs', 'categories', 'images'];
 
 // 允许查询的列白名单（防止列名注入）
 const ALLOWED_COLUMNS = {
-  storage_configs: ['id', 'name', 'type', 'config', 'endpoint', 'status', 'created_at', 'updated_at'],
+  storage_configs: ['id', 'name', 'type', 'config', 'endpoint', 'origin_domain', 'status', 'created_at', 'updated_at'],
   categories: ['id', 'name', 'slug', 'description', 'storage_id', 'storage_path', 'status', 'cache_ttl', 'created_at'],
   images: ['id', 'category_id', 'filename', 'storage_key', 'url', 'size', 'width', 'height', 'mime_type', 'created_at'],
 };
