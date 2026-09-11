@@ -3,8 +3,7 @@ const { getDb } = require('../database');
 const db = new Proxy({}, { get(_, prop) { return getDb()[prop]; } });
 const cache = require('./cacheService');
 const { createAdapter } = require('../adapters');
-const { decrypt } = require('../utils/crypto');
-const { encrypt } = require('../utils/crypto');
+const { encrypt, decrypt } = require('../utils/crypto');
 const { getMimeType, isImage, getImageDimensions } = require('../utils/imageInfo');
 const { safeFetch } = require('../utils/safeFetch');
 const { normalizeEndpoint } = require('../utils/endpoint');
@@ -651,7 +650,47 @@ function getAllImages(page = 1, size = 50) {
   return { items, total, page: p, size: s, pages: Math.ceil(total / s) };
 }
 
+/**
+ * 首次启动写入演示数据（仅当数据库中没有任何存储源时执行一次）
+ * 使用 Lorem Picsum 公开图片，保证全新部署开箱即用；接入自有存储后可在后台整体删除
+ */
+function seedDemoDataIfEmpty() {
+  const { count } = db.prepare('SELECT COUNT(*) AS count FROM storage_configs').get();
+  if (count > 0) return;
+
+  const PICSUM_IDS = [
+    10, 100, 1000, 1002, 1003, 1015, 1016, 1018, 1019, 1020,
+    1024, 1025, 1035, 1036, 1041, 1043, 1044, 1050, 1052, 1060,
+    1067, 1069, 1074, 1080,
+  ];
+
+  db.transaction(() => {
+    const storage = db.prepare(`
+      INSERT INTO storage_configs (name, type, config, endpoint, origin_domain, status)
+      VALUES (?, 'external', ?, 'https://picsum.photos', NULL, 1)
+    `).run('Picsum 演示图库', encrypt('{}'));
+
+    const category = db.prepare(`
+      INSERT INTO categories (name, slug, description, storage_id, storage_path, status, cache_ttl)
+      VALUES ('Picsum 演示', 'picsum', '开箱即用的演示图库（图片来自 Lorem Picsum），接入自有存储源后可删除', ?, '', 1, 300)
+    `).run(storage.lastInsertRowid);
+
+    const stmt = db.prepare(`
+      INSERT INTO images (category_id, filename, storage_key, url, size, width, height, mime_type)
+      VALUES (?, ?, ?, ?, 0, 1920, 1080, 'image/jpeg')
+    `);
+    for (const id of PICSUM_IDS) {
+      const url = `https://picsum.photos/id/${id}/1920/1080`;
+      stmt.run(category.lastInsertRowid, `picsum-${id}.jpg`, url, url);
+    }
+  });
+  getDb().save();
+
+  console.log(`[Seed] 已写入 Picsum 演示图库（${PICSUM_IDS.length} 张），API 地址: /api/picsum`);
+}
+
 module.exports = {
+  seedDemoDataIfEmpty,
   getRandomImage,
   uploadImage,
   deleteImage,

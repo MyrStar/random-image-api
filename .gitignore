@@ -1,5 +1,17 @@
+# 环境配置（含密钥，绝不提交）
+.env
+
+# 数据目录（SQLite 数据库，含加密后的存储凭证）
+data/
+
+# 依赖
 node_modules/
 client/node_modules/
+
+# 前端构建产物
 client/dist/
-data/
-.env
+
+# 日志与临时文件
+*.log
+*.tmp
+.DS_Store

@@ -10,6 +10,9 @@ async function main() {
   // 从数据库加载运行时配置（覆盖 .env 默认值）
   config.loadFromDatabase();
 
+  // 空库首次启动时写入 Picsum 演示图库，保证全新部署开箱即用
+  require('./services/imageService').seedDemoDataIfEmpty();
+
   // 启动安全校验：默认弱密钥在生产环境直接拒绝启动
   config.checkStartupSecurity();
 

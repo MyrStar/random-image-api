@@ -110,10 +110,11 @@ class DatabaseWrapper {
       try {
         fs.writeFileSync(config.dbPath, buffer);
         fs.rmSync(tmpPath, { force: true });
+        // 降级写入成功即视为保存成功，仅提示走了非原子路径（继续抛错会让调用方误判为保存失败）
+        console.warn('[DB Save] 原子重命名失败，已降级为直接覆盖写入:', err.message);
       } catch (inner) {
         throw inner;
       }
-      throw err;
     }
   }
 }
@@ -223,16 +224,6 @@ function _migrateRemoveAutoincrement(db) {
         if (c.pk) def += ' PRIMARY KEY'; // 不再带 AUTOINCREMENT
         return def;
       }).join(', ');
-
-      // 获取外键
-      const fks = db.prepare(`PRAGMA foreign_key_list("${table}")`).all();
-      const fkClauses = fks.map(fk => {
-        // ON UPDATE 和 ON DELETE
-        let clause = `FOREIGN KEY ("${fk.from}") REFERENCES "${fk.table}"("${fk.to}")`;
-        if (fk.on_delete && fk.on_delete !== 'NO ACTION') clause += ` ON DELETE ${fk.on_delete}`;
-        if (fk.on_update && fk.on_update !== 'NO ACTION') clause += ` ON UPDATE ${fk.on_update}`;
-        return clause;
-      });
 
       // 获取索引（排除自动创建的主键索引和内部自动索引）
       const indexes = db.prepare(`PRAGMA index_list("${table}")`).all();

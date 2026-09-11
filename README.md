@@ -17,6 +17,8 @@ cd random-image-api
 
 # 2. 复制配置文件并修改
 cp .env.example .env
+# ⚠️ 必须修改 .env 中的 JWT_SECRET 和 ENCRYPT_KEY（生产环境使用默认弱密钥将拒绝启动）
+# 生成方式: node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 
 # 3. 构建并启动
 docker-compose up -d --build
@@ -27,6 +29,20 @@ docker-compose up -d
 # 4. 访问管理后台
 # 浏览器打开 http://your-server:3100/admin
 ```
+
+### 开箱即用
+
+空数据库首次启动时会自动写入 **Picsum 演示图库**（24 张 [Lorem Picsum](https://picsum.photos) 公开图片），无需任何配置即可体验：
+
+```bash
+# 随机返回一张演示图（302 跳转）
+curl -I http://localhost:3100/api/picsum
+
+# 缩放为 500px 宽
+curl -o demo.jpg "http://localhost:3100/api/picsum?w=500"
+```
+
+接入自己的存储源后，可在管理后台删除该演示存储源（其下分类与图片记录会一并删除）。
 
 ### 方式二：直接部署
 
@@ -47,7 +63,7 @@ pm2 start server/index.js --name random-image-api
 
 ### 首次登录
 
-默认账号密码在 `.env` 文件中配置，首次登录后建议在 **系统设置** 页面修改密码。
+默认账号密码为 `admin` / `admin123`（由 `.env` 中的 `ADMIN_USER` / `ADMIN_PASS` 决定），**首次登录后请立即在 系统设置 页面修改密码**。
 
 ---
 
@@ -210,7 +226,7 @@ curl http://your-server:3100/api/wallpaper?w=500
 ```env
 PORT=3100                        # 后续可在系统设置中修改
 ADMIN_USER=admin
-ADMIN_PASS=your_secure_password  # 必须修改！默认弱密钥在生产环境会拒绝启动
+ADMIN_PASS=admin123              # 初始密码，登录后台后立即修改（在线修改后此处不再生效）
 JWT_SECRET=your_jwt_secret       # 必须修改！默认弱密钥在生产环境会拒绝启动
 ENCRYPT_KEY=0123456789abcdef0123456789abcdef  # 必须修改！随机字符串即可，建议32位hex
 DB_PATH=./data/images.db
@@ -221,7 +237,7 @@ TRUST_PROXY=loopback             # 反代信任配置：loopback/跳数/CIDR列�
 
 > 生成随机密钥：`node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
 
-> ⚠️ **启动安全校验**：生产环境（`NODE_ENV=production`）下，`ADMIN_PASS`/`JWT_SECRET`/`ENCRYPT_KEY` 仍为默认值时将拒绝启动；开发环境仅打印警告。如确需以默认值启动，可设置 `ALLOW_INSECURE_DEFAULTS=1`（强烈不推荐）。
+> ⚠️ **启动安全校验**：生产环境（`NODE_ENV=production`）下，`JWT_SECRET`/`ENCRYPT_KEY` 仍为默认值时将拒绝启动；`ADMIN_PASS` 为默认值时仅打印警告（方便开箱即用，登录后请立即修改）。如确需以默认弱密钥启动，可设置 `ALLOW_INSECURE_DEFAULTS=1`（强烈不推荐）。
 
 > ⚠️ `ENCRYPT_KEY` 修改后会导致已有存储源密钥无法解密。如需更换，请先删除所有存储源。
 
@@ -263,7 +279,7 @@ server {
 
 ## 安全注意事项
 
-1. **修改默认密码**：首次部署必须修改 `.env` 中的 `ADMIN_PASS`。密码在线修改后以 bcrypt 哈希保存，且所有已登录会话立即失效
+1. **修改默认密码**：默认密码 `admin123` 仅用于首次登录，登录后请立即修改。密码在线修改后以 bcrypt 哈希保存，且所有已登录会话立即失效
 2. **修改 JWT 密钥**：使用随机生成的 64 位 hex 字符串
 3. **修改加密密钥**：使用随机生成的 32 位 hex 字符串
 4. **限制 CORS**：生产环境不要使用 `*`，应指定具体域名
@@ -329,7 +345,8 @@ random-image-api/
 │   │   ├── aliyun-oss.js    # 阿里云 OSS
 │   │   ├── tencent-cos.js   # 腾讯云 COS
 │   │   ├── cloudflare-r2.js # Cloudflare R2
-│   │   └── minio.js         # MinIO
+│   │   ├── minio.js         # MinIO
+│   │   └── external.js      # 外链图片（内置演示类型）
 │   ├── middleware/          # 中间件
 │   │   ├── auth.js          # JWT 认证
 │   │   └── errorHandler.js  # 错误处理
@@ -349,12 +366,17 @@ random-image-api/
 │   │   └── cacheService.js  # 缓存服务
 │   └── utils/               # 工具
 │       ├── crypto.js        # 加密解密
+│       ├── safeFetch.js     # SSRF 安全 fetch
 │       ├── imageInfo.js     # 图片信息
+│       ├── endpoint.js      # 域名归一化
+│       ├── respond.js       # 统一响应辅助
 │       └── nanoid.js        # ID 生成
 ├── client/                  # 前端
 │   └── src/
 │       ├── App.vue          # 主布局
 │       ├── main.js          # 入口
+│       ├── api.js           # Axios 封装
+│       ├── utils.js         # 前端工具函数
 │       ├── router/          # 路由
 │       └── views/           # 页面
 │           ├── Login.vue    # 登录
@@ -364,10 +386,12 @@ random-image-api/
 │           ├── Images.vue   # 图片
 │           ├── Database.vue # 数据浏览
 │           └── Settings.vue # 系统设置
-├── data/                    # 数据目录
+├── deploy/                  # 部署辅助（离线构建/Nginx 示例/systemd 等）
+├── data/                    # 数据目录（不进仓库）
 │   └── images.db            # SQLite 数据库
 ├── .env                     # 环境配置（不进仓库）
 ├── .env.example             # 配置模板
+├── .gitignore
 ├── Dockerfile               # Docker 构建
 ├── docker-compose.yml       # Docker Compose
 └── package.json             # 依赖

@@ -139,8 +139,7 @@ function createBlockError(message) {
 /* ---------------- 建连时二次校验的 Agent（防 DNS Rebinding） ---------------- */
 
 function safeLookup(hostname, options, callback) {
-  dns.lookup(hostname, { all: true }, (err, addresses) => {
-    if (err) return callback(err);
+  dns.lookup(hostname, { all: true }).then((addresses) => {
     for (const a of addresses) {
       if (isPrivateIp(a.address)) {
         return callback(createBlockError(`禁止访问内网地址: ${hostname} -> ${a.address}`));
@@ -148,8 +147,13 @@ function safeLookup(hostname, options, callback) {
     }
     // 优先 IPv4：部分服务器 IPv6 不通，逐条等待会拖慢/挂起请求
     const sorted = [...addresses].sort((a, b) => (a.family === 4 ? 0 : 1) - (b.family === 4 ? 0 : 1));
+    // Node>=18.4 默认开启 autoSelectFamily，此时 net 模块以 all:true 调用 lookup，
+    // 回调约定为地址数组；否则为单个地址 + family，两种约定都要满足
+    if (options && options.all) {
+      return callback(null, sorted);
+    }
     callback(null, sorted[0].address, sorted[0].family);
-  });
+  }).catch((err) => callback(err));
 }
 
 const httpAgent = new http.Agent({ lookup: safeLookup, keepAlive: false });

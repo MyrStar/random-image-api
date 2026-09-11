@@ -46,7 +46,7 @@
         </el-form-item>
         <el-form-item label="存储源" prop="storage_id">
           <el-select v-model="form.storage_id" style="width:100%" placeholder="选择存储源">
-            <el-option v-for="s in storages" :key="s.id" :label="s.name" :value="s.id" />
+            <el-option v-for="s in selectableStorages" :key="s.id" :label="s.name" :value="s.id" />
           </el-select>
         </el-form-item>
         <el-form-item label="存储路径" prop="storage_path">
@@ -67,7 +67,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, computed, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import api from '../api'
 import { copyToClipboard } from '../utils'
@@ -83,6 +83,12 @@ const formRef = ref()
 const form = reactive({
   name: '', slug: '', description: '', storage_id: null, storage_path: '', cache_ttl: 300,
 })
+
+// 外链图片（内置演示类型）不支持上传/同步，新建分类时不出现在选项中；
+// 但编辑已使用该存储源的分类时仍需显示，避免下拉框空白
+const selectableStorages = computed(() =>
+  storages.value.filter(s => s.type !== 'external' || s.id === form.storage_id)
+)
 const rules = {
   name: [{ required: true, message: '请输入名称', trigger: 'blur' }],
   slug: [

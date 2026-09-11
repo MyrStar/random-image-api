@@ -36,6 +36,7 @@
         <el-form-item label="存储类型" prop="type">
           <el-select v-model="form.type" style="width:100%" :disabled="!!editingId">
             <el-option v-for="t in supportedTypes" :key="t.type" :label="t.name" :value="t.type" />
+            <el-option v-if="form.type === 'external'" label="外链图片" value="external" />
           </el-select>
           <div v-if="editingId" class="form-tip">编辑时不可更改存储类型（类型变更需要重新填写全部密钥，请新建存储源）</div>
         </el-form-item>
@@ -163,6 +164,13 @@
             <el-switch v-model="form.config.useSSL" />
           </el-form-item>
         </template>
+
+        <!-- 外链图片（内置演示类型） -->
+        <template v-if="form.type === 'external'">
+          <el-form-item label="说明">
+            <div class="form-tip">外链图片为内置演示类型：图片 URL 直接入库，无需密钥，不支持上传与同步。</div>
+          </el-form-item>
+        </template>
         <el-form-item label="访问域名" prop="endpoint">
           <el-input v-model="form.endpoint" placeholder="如 https://cdn.example.com" />
           <div class="form-tip">生成公开图片 URL 用的域名（可以套外部 CDN）</div>
@@ -199,6 +207,7 @@ const configDefaults = {
   tencent_cos: () => ({ secretId: '', secretKey: '', bucket: '', region: '' }),
   cloudflare_r2: () => ({ endpoint: '', accessKeyId: '', secretAccessKey: '', bucket: '', publicDomain: '' }),
   minio: () => ({ endPoint: '', port: '', accessKey: '', secretKey: '', bucket: '', useSSL: true }),
+  external: () => ({}),
 }
 
 const form = reactive({
@@ -222,7 +231,7 @@ const rules = {
   type: [{ required: true, message: '请选择类型', trigger: 'change' }],
 }
 
-const typeNames = { qiniu: '七牛云', aliyun_oss: '阿里云OSS', tencent_cos: '腾讯云COS', cloudflare_r2: 'R2', minio: 'MinIO' }
+const typeNames = { qiniu: '七牛云', aliyun_oss: '阿里云OSS', tencent_cos: '腾讯云COS', cloudflare_r2: 'R2', minio: 'MinIO', external: '外链图片' }
 function typeName(type) { return typeNames[type] || type }
 
 async function load() {

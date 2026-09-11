@@ -43,6 +43,8 @@ const _config = { ...envDefaults };
 
 // 管理员密码的 bcrypt 哈希（运行时校验用；明文仅存在于内存）
 let _adminPassHash = null;
+// 数据库中是否已保存过密码哈希（true 说明用户已在线修改过密码，.env 默认值不再生效）
+let _hasStoredPassHash = false;
 // 密码最后修改时间（unix 秒），早于该时间签发的 JWT 失效
 let _passwordChangedAt = 0;
 
@@ -76,6 +78,7 @@ function persistSetting(db, key, value) {
   if (key === 'adminPass') {
     _adminPassHash = bcrypt.hashSync(String(value), 10);
     upsertRow(db, 'adminPassHash', _adminPassHash);
+    _hasStoredPassHash = true;
     // 清理旧版本可能遗留的明文密码
     db.prepare('DELETE FROM system_settings WHERE key = ?').run('adminPass');
     // 哈希已生成，明文不再需要（校验统一走 bcrypt），从内存清除
@@ -111,6 +114,7 @@ function loadFromDatabase() {
     for (const row of rows) {
       if (row.key === 'adminPassHash') {
         _adminPassHash = row.value;
+        _hasStoredPassHash = true;
         continue;
       }
       if (row.key === 'passwordChangedAt') {
@@ -120,6 +124,7 @@ function loadFromDatabase() {
       if (row.key === 'adminPass') {
         // 迁移：旧版本把明文密码写进了数据库，转为哈希并删除明文
         _adminPassHash = bcrypt.hashSync(row.value, 10);
+        _hasStoredPassHash = true;
         db.transaction(() => {
           upsertRow(db, 'adminPassHash', _adminPassHash);
           db.prepare('DELETE FROM system_settings WHERE key = ?').run('adminPass');
@@ -165,9 +170,10 @@ function checkStartupSecurity() {
   };
 
   const problems = [];
-  // 密码已经在线设置过（有哈希）时，.env 里的默认值不再作为校验依据
-  if (!_adminPassHash && (!_config.adminPass || insecureDefaults.adminPass.includes(_config.adminPass))) {
-    problems.push('管理员密码 (ADMIN_PASS) 仍为默认/示例值');
+  // 管理员密码允许用默认值首次启动（登录后台可随时修改，修改后哈希入库）：
+  // 只警告、不阻断启动；已在线修改过时 .env 里的默认值不再生效，无需提示
+  if (!_hasStoredPassHash && insecureDefaults.adminPass.includes(envDefaults.adminPass)) {
+    console.warn('[安全警告] 管理员密码为默认值，请登录后台立即修改（后台 -> 系统设置）');
   }
   if (!_config.jwtSecret || insecureDefaults.jwtSecret.includes(_config.jwtSecret)) {
     problems.push('JWT 密钥 (JWT_SECRET) 仍为默认/示例值，任何人可伪造登录凭证');
@@ -308,9 +314,7 @@ function getAllSettings() {
   };
 }
 
-/**
- * 获取所有可配置项（脱敏后的）
- */
+/** 脱敏：保留前 2 位和后 2 位，中间打码（用于回显密钥类配置） */
 function maskSecret(val) {
   if (!val || val.length <= 4) return '****';
   return val.slice(0, 2) + '****' + val.slice(-2);
