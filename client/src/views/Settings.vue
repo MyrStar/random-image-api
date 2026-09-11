@@ -179,6 +179,19 @@ async function saveSettings() {
     const res = await api.put('/settings', form.value)
     if (res.code === 0) {
       ElMessage.success(res.message || '保存成功')
+      // 登录账号/密码变更：旧会话已失效（密码）或用户名已变，强制重新登录
+      const changes = res.data?.changes || []
+      if (changes.includes('adminPass') || changes.includes('adminUser')) {
+        await ElMessageBox.confirm(
+          '登录账号/密码已修改，请使用新凭证重新登录',
+          '需要重新登录',
+          { confirmButtonText: '重新登录', showCancelButton: false, type: 'warning', closeOnClickModal: false, closeOnPressEscape: false }
+        ).catch(() => {})
+        localStorage.removeItem('token')
+        localStorage.removeItem('username')
+        window.location.href = '/admin/'
+        return
+      }
       // 显示警告信息
       if (res.data?.warnings?.length) {
         const msgs = res.data.warnings.map(w => w.message).join('\n')

@@ -45,7 +45,7 @@ const _config = { ...envDefaults };
 let _adminPassHash = null;
 // 数据库中是否已保存过密码哈希（true 说明用户已在线修改过密码，.env 默认值不再生效）
 let _hasStoredPassHash = false;
-// 密码最后修改时间（unix 秒），早于该时间签发的 JWT 失效
+// 密码最后修改时间（unix 秒），不晚于该时间签发的 JWT 失效
 let _passwordChangedAt = 0;
 
 // 数据库是否已初始化
@@ -202,7 +202,8 @@ function checkStartupSecurity() {
  * 部分配置支持热更新（无需重启）
  */
 function setSetting(key, value) {
-  if (!(key in _config)) {
+  // adminPass 因安全设计在启动后即从 _config 删除（明文不留内存），但它仍是合法配置键
+  if (key !== 'adminPass' && !(key in _config)) {
     throw new Error(`未知的配置项: ${key}`);
   }
   const oldValue = _config[key];
@@ -244,7 +245,8 @@ function updateSettings(settings) {
   const changes = [];
   const oldValues = {};
   for (const [key, value] of Object.entries(settings)) {
-    if (!(key in _config)) continue;
+    // adminPass 因安全设计在启动后即从 _config 删除（明文不留内存），但它仍是合法配置键
+    if (key !== 'adminPass' && !(key in _config)) continue;
     if (_config[key] !== value) {
       oldValues[key] = _config[key];
       _config[key] = value;
