@@ -1,0 +1,32 @@
+server/routes/api.js
+  s_2e78024e7c361b::t_3e5672af82ffec 84-87
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "8556c789de68c2cd28d49b12f182d9178254342d",
+  "prompts": {},
+  "sessions": {
+    "s_2e78024e7c361b": {
+      "agent_id": {
+        "tool": "trae",
+        "id": "6ab4e6a7bf9659c86953d767",
+        "model": "kimi-k3__max"
+      },
+      "human_author": "Eternal <73432163+MyrStars@users.noreply.github.com>",
+      "custom_attributes": {
+        "dedupe_key": "6ab4e6a7bf9659c86953d767:6ab4e7b2bf9659c86953d7bb:afterEdit:e1e89f36",
+        "source_scene": "unknown",
+        "external_session_id": "6ab4e6a7bf9659c86953d767",
+        "edit_kind": "file_edit",
+        "tool_type": "agent",
+        "operation_id": "6ab4e7b2bf9659c86953d7bb",
+        "tool_use_id": "6ab4e7b2bf9659c86953d7bb",
+        "client_type": "ide",
+        "runtime_client": "trae-tob-git-ai",
+        "session_id": "6ab4e6a7bf9659c86953d767",
+        "tool_id": "Edit"
+      }
+    }
+  }
+}
