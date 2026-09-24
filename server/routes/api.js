@@ -81,13 +81,15 @@ router.get('/:slug', async (req, res) => {
     const mode = RESIZE_MODES.includes(req.query.mode) ? req.query.mode : 'fit';
     const needResize = targetW !== null || targetH !== null;
 
+    // 本接口每次随机选图，所有响应（含302跳转）严禁缓存，
+    // 否则浏览器/CDN会缓存同 URL 的首次结果，导致页面内多处引用显示同一张图
+    res.set('Cache-Control', 'no-store');
+
     // 可选：存储端处理（七牛 imageView2，会计入七牛图片处理费用）。
     // 默认关闭；需要时设置环境变量 QINIU_CDN_RESIZE=1 开启（服务器取图不便时有用）
     if (needResize && process.env.QINIU_CDN_RESIZE === '1') {
       const processed = imageService.getProcessedResizeUrl(slug, targetW, targetH, mode);
       if (processed) {
-        // 本接口每次随机选图，严禁缓存响应（缓存会让同 URL 固定返回同一张图）
-        res.set('Cache-Control', 'no-store');
         return res.redirect(302, processed);
       }
     }
@@ -134,8 +136,6 @@ router.get('/:slug', async (req, res) => {
                 : pipeline.resize({ height: h, fit: 'inside' });
             const outBuffer = await resized.toFormat(SHARP_FORMATS[mime]).toBuffer();
             res.set('Content-Type', mime);
-            // 本接口每次随机选图，严禁缓存响应（缓存会让同 URL 固定返回同一张图）
-            res.set('Cache-Control', 'no-store');
             return res.send(outBuffer);
           } catch (err) {
             // 图片数据损坏等缩放失败：降级为跳转原图，而不是报错
@@ -145,8 +145,6 @@ router.get('/:slug', async (req, res) => {
         }
 
         res.set('Content-Type', mime);
-        // 本接口每次随机选图，严禁缓存响应（缓存会让同 URL 固定返回同一张图）
-        res.set('Cache-Control', 'no-store');
         return res.send(buffer);
       } catch (err) {
         if (err.code === 'ESSRFBLOCKED') {
