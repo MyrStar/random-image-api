@@ -1,0 +1,36 @@
+server/routes/admin/images.js
+  s_2e78024e7c361b::t_91f04d3290aabf 136,140
+server/services/imageService.js
+  s_2e78024e7c361b::t_7e46aad654d57f 355
+  s_2e78024e7c361b::t_83ed5030a456db 338-348
+  s_2e78024e7c361b::t_61104810cf7f48 297-298,312
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "997ef385f28bda69698f39057eb9df17717e6486",
+  "prompts": {},
+  "sessions": {
+    "s_2e78024e7c361b": {
+      "agent_id": {
+        "tool": "trae",
+        "id": "6ab4e6a7bf9659c86953d767",
+        "model": "kimi-k3__max"
+      },
+      "human_author": "Eternal <73432163+MyrStars@users.noreply.github.com>",
+      "custom_attributes": {
+        "tool_use_id": "6ac8879c28ca7dae546c500e",
+        "session_id": "6ab4e6a7bf9659c86953d767",
+        "operation_id": "6ac8879c28ca7dae546c500e",
+        "tool_type": "agent",
+        "external_session_id": "6ab4e6a7bf9659c86953d767",
+        "dedupe_key": "6ab4e6a7bf9659c86953d767:6ac8879c28ca7dae546c500e:afterEdit:00223ac2",
+        "source_scene": "unknown",
+        "edit_kind": "file_edit",
+        "runtime_client": "trae-tob-git-ai",
+        "client_type": "ide",
+        "tool_id": "Edit"
+      }
+    }
+  }
+}
