@@ -133,10 +133,11 @@ router.post('/sync', async (req, res) => {
     if (!category_id) return res.status(400).json({ code: 400, message: '缺少category_id' });
     const result = await imageService.syncFromStorage(parseIntOr(category_id, 0));
     const updatedMsg = result.updated > 0 ? `，更新${result.updated}张` : '';
+    const removedMsg = result.removed > 0 ? `，清理远端已删除的${result.removed}张` : '';
     res.json({
       code: 0,
       data: result,
-      message: `同步完成，新增${result.added}张${updatedMsg}，共${result.total}张。同步只读取文件列表，如需宽高信息请点击「修复尺寸」`,
+      message: `同步完成，新增${result.added}张${updatedMsg}${removedMsg}，共${result.total}张。同步只读取文件列表，如需宽高信息请点击「修复尺寸」`,
     });
   } catch (err) {
     sendCaught(res, err);

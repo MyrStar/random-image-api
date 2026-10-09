@@ -294,6 +294,8 @@ async function syncFromStorage(categoryId) {
     const existingRows = db.prepare('SELECT id, storage_key, url, size, mime_type FROM images WHERE category_id = ?')
       .all(categoryId);
     const existing = new Map(existingRows.map(r => [r.storage_key, r]));
+    // 本次存储源实际存在的 key，用于清理"库里有、远端已删"的死记录
+    const seenKeys = new Set();
 
     let added = 0;
     let updated = 0;
@@ -307,6 +309,7 @@ async function syncFromStorage(categoryId) {
 
       for (const item of result.items) {
         if (!isImage(item.key)) continue;
+        seenKeys.add(item.key);
 
         const filename = path.basename(item.key);
         const url = adapter.getUrl(item.key);
@@ -332,13 +335,24 @@ async function syncFromStorage(categoryId) {
       hasMore = !!marker;
     }
 
+    // 清理"数据库有、存储源已不存在"的记录（远端被删除/目录变更），否则随机接口会返回死链
+    // 只在列表完整拉取成功后执行（list 出错会抛异常，走不到这里）
+    let removed = 0;
+    for (const [key, row] of existing) {
+      if (!seenKeys.has(key)) {
+        db.prepare('DELETE FROM images WHERE id = ?').run(row.id);
+        dimensionFixFailed.delete(row.id);
+        removed++;
+      }
+    }
+
     // 清除缓存
     cache.del(CACHE_PREFIX + category.slug);
 
     // 清除该分类图片的"修复尺寸失败"记录，URL 修正后允许重新尝试
     for (const row of existingRows) dimensionFixFailed.delete(row.id);
 
-    return { added, updated, total: existing.size };
+    return { added, updated, removed, total: existing.size - removed };
   } finally {
     syncingCategories.delete(categoryId);
   }
